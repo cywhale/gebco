@@ -20,7 +20,6 @@
 **/.ipynb_checkpoints
 **/static
 *.mat
-*.csv
 *.log
 **/access_log*
 **/test_log
