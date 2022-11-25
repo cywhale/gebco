@@ -5,7 +5,7 @@ import math
 # import time
 # import orjson
 from fastapi import FastAPI, status  # , Depends
-# from fastapi.encoders import jsonable_encoder
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 # from loggerConfig import logger
 # from models import zprofSchema
@@ -59,7 +59,7 @@ def numarr_query_validator(qry):
             return("Format Error")
 
 
-@app.get("/")
+@app.get("/gebco")
 def zprofile(lon: str, lat: str):  # query: zprofSchema = Depends()):
     lonx = numarr_query_validator(lon)
     latx = numarr_query_validator(lat)
@@ -100,6 +100,10 @@ def zprofile(lon: str, lat: str):  # query: zprofSchema = Depends()):
         ds.close()
         loc1 = [lonx[0], latx[0]]
         xt1 = np.array([st1['elevation'].values])
+        df1 = pd.DataFrame({"longitude": np.array([loc1[0]]).tolist(),
+                            "latitude": np.array([loc1[1]]).tolist(),
+                            "z": xt1.tolist()},
+                            columns=['longitude', 'latitude', 'z'])
         # et = time.time()
         # print('Get only one-point exe time: ', et-st, 'sec')
         # return(xt1)
@@ -191,6 +195,10 @@ def zprofile(lon: str, lat: str):  # query: zprofSchema = Depends()):
         # print(ds_s1['elevation'].shape)
         xt1 = ds_s1['elevation'].values[tuple(idx1.T)]
         ds_s1.close()
+        df1 = pd.DataFrame({"longitude": loc1[:, 0].tolist(),
+                            "latitude": loc1[:, 1].tolist(),
+                            "z": xt1.tolist()},
+                            columns=['longitude', 'latitude', 'z'])
         # et = time.time()
         # print('Get value from index of points, time: ', et-st, 'sec')
         # return({"data": xt1})
@@ -200,10 +208,6 @@ def zprofile(lon: str, lat: str):  # query: zprofSchema = Depends()):
     # jt1 = orjson.dumps(xt1.tolist(), option=orjson.OPT_NAIVE_UTC |
     #                   orjson.OPT_SERIALIZE_NUMPY)
     # out = jsonable_encoder({"data": xt1.tolist()})
-    df1 = pd.DataFrame({"longitude": loc1[:, 0].tolist(),
-                        "latitude": loc1[:, 1].tolist(),
-                        "z": xt1.tolist()},
-                       columns=['longitude', 'latitude', 'z'])
     out = df1.to_dict(orient='records')
     # et = time.time()
     # print('4 Convert JSON by fastapi: ', et-st, 'sec')
