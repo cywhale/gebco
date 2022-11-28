@@ -163,7 +163,7 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
             else:
                 if lonidx0 == lonidx1:
                     stepi = -1 if latidx0 > latidx1 else 1
-                    for y in range(latidx0, latidx1, stepi):
+                    for k, y in enumerate(range(latidx0, latidx1, stepi)):
                         idx1 = np.append(
                             idx1, [[y-mlatbase, lonidx0-mlonbase]], axis=0)
                         locy0 = y/arc - basey
@@ -172,13 +172,14 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
                         #print("yi: ", y, locy0i + doty0i)
                         loc1 = np.append(
                             loc1, [[lonx[i], locy0i + doty0i]], axis=0)
-                        lk = len(loc1)-1
-                        dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
-                                        (loc1[lk, 1], loc1[lk, 0])).km
-                        dis1 = np.append(dis1, dist, axis=None)
+                        if k >= 1:
+                            lk = len(loc1)-1
+                            dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
+                                            (loc1[lk, 1], loc1[lk, 0])).km
+                            dis1 = np.append(dis1, dist, axis=None)
                 elif latidx0 == latidx1:
                     stepi = -1 if lonidx0 > lonidx1 else 1
-                    for x in range(lonidx0, lonidx1, stepi):
+                    for k, x in enumerate(range(lonidx0, lonidx1, stepi)):
                         idx1 = np.append(
                             idx1, [[latidx0-mlatbase, x-mlonbase]], axis=0)
                         locx0 = x/arc - basex
@@ -187,17 +188,18 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
                         #print("xi: ", x, locx0i + dotx0i)
                         loc1 = np.append(
                             loc1, [[locx0i + dotx0i, latx[i]]], axis=0)
-                        lk = len(loc1)-1
-                        dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
-                                        (loc1[lk, 1], loc1[lk, 0])).km
-                        dis1 = np.append(dis1, dist, axis=None)
+                        if k >= 1:
+                            lk = len(loc1)-1
+                            dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
+                                            (loc1[lk, 1], loc1[lk, 0])).km
+                            dis1 = np.append(dis1, dist, axis=None)
                 else:
                     m = (latx[i+1]-latx[i])/(lonx[i+1]-lonx[i])
                     b = latx[i] - m * lonx[i]  # y = mx + b
                     # print("m, b:", m ,b)
                     stepi = -1 if lonidx0 > lonidx1 else 1
                     for k, x in enumerate(range(lonidx0, lonidx1, stepi)):
-                        if (k == 0):  # should consider internal node not repeated twice
+                        if k == 0:  # should consider internal node not repeated twice
                             idx1 = np.append(
                                 idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
                             loc1 = np.append(
