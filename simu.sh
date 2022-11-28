@@ -1,5 +1,4 @@
 #!/bin/bash
-# ver 0.1.1 port on server 20221125
 # most-performant, add worker, --threads, --worker-connections seems no extra benefits
 gunicorn read_gebco01:app -w 4 -k uvicorn.workers.UvicornWorker --reload
 # maximum no-error limit (if -p 3, always throw error)

@@ -4,9 +4,11 @@ import pandas as pd
 import math
 # import time
 # import orjson
+from geopy.distance import geodesic
 from fastapi import FastAPI, status  # , Depends
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from typing import Union
 # from loggerConfig import logger
 # from models import zprofSchema
 import dask
@@ -45,7 +47,7 @@ def gridded_arcsec(x, base=90, arc=3600/15):
 
 
 def numarr_query_validator(qry):
-    if (',' in qry):
+    if ',' in qry:
         try:
             out = [float(x.strip()) for x in qry.split(',')]
             return(out)
@@ -60,10 +62,10 @@ def numarr_query_validator(qry):
 
 
 @app.get("/gebco")
-def zprofile(lon: str, lat: str):  # query: zprofSchema = Depends()):
+def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
     lonx = numarr_query_validator(lon)
     latx = numarr_query_validator(lat)
-    if (isinstance(lonx, str) or isinstance(latx, str)):
+    if isinstance(lonx, str) or isinstance(latx, str):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content=jsonable_encoder({"Error": "Check your input format should be comma-separated values"}))
 
@@ -83,14 +85,24 @@ def zprofile(lon: str, lat: str):  # query: zprofSchema = Depends()):
     # print('1. Load dataset time: ', et-st, 'sec')
     # lon = [123.98, 123]  # just testing
     # lat = [23.33, 21.33]
+    # i.e. {longitude=[...], laitude=[...], z=[...]}, otherwise 'row', output df-like records
+    format = 'default'
+    # i.e, output all gridded points along the line; otherwise 'point', output only end-points.
+    zmode = 'line'
+    if mode is not None:
+        if 'point' in mode.lower():
+            zmode = 'point'
+        if 'row' in mode.lower():
+            format = 'row'
+    #print("current mode: ", format, " & ", zmode)
 
-    if (len(lonx) != len(latx)):
+    if len(lonx) != len(latx):
         ds.close()
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content=jsonable_encoder({"Error": "Check your input of lon/lat should be in equal length"}))
 
     # May not have exact lon, lat in gridded lon-lat, so need to calculate index
-    elif (len(lonx) == 1):
+    elif len(lonx) == 1:
         # st = time.time()
         lon0 = gridded_arcsec(lonx[0], basex, arc)
         lat0 = gridded_arcsec(latx[0], basey, arc)
@@ -100,10 +112,15 @@ def zprofile(lon: str, lat: str):  # query: zprofSchema = Depends()):
         ds.close()
         loc1 = [lonx[0], latx[0]]
         xt1 = np.array([st1['elevation'].values])
-        df1 = pd.DataFrame({"longitude": np.array([loc1[0]]).tolist(),
-                            "latitude": np.array([loc1[1]]).tolist(),
-                            "z": xt1.tolist()},
-                            columns=['longitude', 'latitude', 'z'])
+        if format == 'row':
+            df1 = pd.DataFrame({"longitude": np.array([loc1[0]]).tolist(),
+                                "latitude": np.array([loc1[1]]).tolist(),
+                                "z": xt1.tolist(), "distance": np.array([0]).tolist()},
+                               columns=['longitude', 'latitude', 'z', 'distance'])
+        else:
+            out = jsonable_encoder({"longitude": np.array([loc1[0]]).tolist(),
+                                    "latitude": np.array([loc1[1]]).tolist(),
+                                    "z": xt1.tolist(), "distance": np.array([0]).tolist()})
         # et = time.time()
         # print('Get only one-point exe time: ', et-st, 'sec')
         # return(xt1)
@@ -111,8 +128,7 @@ def zprofile(lon: str, lat: str):  # query: zprofSchema = Depends()):
         # st = time.time()
         idx1 = np.empty(shape=[0, 2], dtype=np.int16)
         loc1 = np.empty(shape=[0, 2], dtype=float)
-        #ele1 = np.empty(shape=[0, 1], dtype=np.int16)
-
+        dis1 = np.array([0.0])
         mlon0 = np.min(lonx)
         #mlon1 = np.max(lonx)
         mlat0 = np.min(latx)
@@ -129,53 +145,87 @@ def zprofile(lon: str, lat: str):  # query: zprofSchema = Depends()):
             latidx0 = gridded_arcsec(latx[i], basey, arc)
             lonidx1 = gridded_arcsec(lonx[i+1], basex, arc)
             latidx1 = gridded_arcsec(latx[i+1], basey, arc)
-            if (lonidx0 == lonidx1 and latidx0 == latidx1):
+            if lonidx0 == lonidx1 and latidx0 == latidx1:
                 idx1 = np.append(  # Note that idx1 is latitude first for zarr, but loc1 is longitude first for geojson
                     idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
                 loc1 = np.append(loc1, [[lonx[i], latx[i]]], axis=0)
-            elif(lonidx0 == lonidx1):
-                stepi = -1 if latidx0 > latidx1 else 1
-                for y in range(latidx0, latidx1, stepi):
+            elif zmode == 'point':
+                idx1 = np.append(
+                    idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
+                loc1 = np.append(loc1, [[lonx[i], latx[i]]], axis=0)
+                dist = geodesic((latx[i], lonx[i]),
+                                (latx[i+1], lonx[i+1])).km
+                dis1 = np.append(dis1, dist, axis=None)
+                if i == len(lonx)-2:
                     idx1 = np.append(
-                        idx1, [[y-mlatbase, lonidx0-mlonbase]], axis=0)
-                    locy0 = y/arc - basey
-                    locy0i = int(locy0)
-                    doty0i = locy0-locy0i-0.25/arc  # a small bias to make sure it's in grid
-                    #print("yi: ", y, locy0i + doty0i)
-                    loc1 = np.append(
-                        loc1, [[lonx[i], locy0i + doty0i]], axis=0)
-            elif(latidx0 == latidx1):
-                stepi = -1 if lonidx0 > lonidx1 else 1
-                for x in range(lonidx0, lonidx1, stepi):
-                    idx1 = np.append(
-                        idx1, [[latidx0-mlatbase, x-mlonbase]], axis=0)
-                    locx0 = x/arc - basex
-                    locx0i = int(locx0)
-                    dotx0i = locx0-locx0i-0.25/arc  # a small bias to make sure it's in grid
-                    #print("xi: ", x, locx0i + dotx0i)
-                    loc1 = np.append(
-                        loc1, [[locx0i + dotx0i, latx[i]]], axis=0)
+                        idx1, [[latidx1-mlatbase, lonidx1-mlonbase]], axis=0)
+                    loc1 = np.append(loc1, [[lonx[i+1], latx[i+1]]], axis=0)
             else:
-                m = (latx[i+1]-latx[i])/(lonx[i+1]-lonx[i])
-                b = latx[i] - m * lonx[i]  # y = mx + b
-                # print("m, b:", m ,b)
-                stepi = -1 if lonidx0 > lonidx1 else 1
-                for k, x in enumerate(range(lonidx0, lonidx1, stepi)):
-                    if (k == 0):  # should consider internal node not repeated twice
+                if lonidx0 == lonidx1:
+                    stepi = -1 if latidx0 > latidx1 else 1
+                    for y in range(latidx0, latidx1, stepi):
                         idx1 = np.append(
-                            idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
-                        loc1 = np.append(loc1, [[lonx[i], latx[i]]], axis=0)
-                    else:
+                            idx1, [[y-mlatbase, lonidx0-mlonbase]], axis=0)
+                        locy0 = y/arc - basey
+                        locy0i = int(locy0)
+                        doty0i = locy0-locy0i-0.25/arc  # a small bias to make sure it's in grid
+                        #print("yi: ", y, locy0i + doty0i)
+                        loc1 = np.append(
+                            loc1, [[lonx[i], locy0i + doty0i]], axis=0)
+                        lk = len(loc1)-1
+                        dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
+                                        (loc1[lk, 1], loc1[lk, 0])).km
+                        dis1 = np.append(dis1, dist, axis=None)
+                elif latidx0 == latidx1:
+                    stepi = -1 if lonidx0 > lonidx1 else 1
+                    for x in range(lonidx0, lonidx1, stepi):
+                        idx1 = np.append(
+                            idx1, [[latidx0-mlatbase, x-mlonbase]], axis=0)
                         locx0 = x/arc - basex
                         locx0i = int(locx0)
                         dotx0i = locx0-locx0i-0.25/arc  # a small bias to make sure it's in grid
-                        locx1 = locx0i + dotx0i
-                        locy1 = m * locx1 + b
-                        y = gridded_arcsec(locy1, basey, arc)
-                        idx1 = np.append(
-                            idx1, [[y-mlatbase, x-mlonbase]], axis=0)
-                        loc1 = np.append(loc1, [[locx1, locy1]], axis=0)
-                        # print(x, locx0, dotx0i, locx1, locy1, y)
+                        #print("xi: ", x, locx0i + dotx0i)
+                        loc1 = np.append(
+                            loc1, [[locx0i + dotx0i, latx[i]]], axis=0)
+                        lk = len(loc1)-1
+                        dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
+                                        (loc1[lk, 1], loc1[lk, 0])).km
+                        dis1 = np.append(dis1, dist, axis=None)
+                else:
+                    m = (latx[i+1]-latx[i])/(lonx[i+1]-lonx[i])
+                    b = latx[i] - m * lonx[i]  # y = mx + b
+                    # print("m, b:", m ,b)
+                    stepi = -1 if lonidx0 > lonidx1 else 1
+                    for k, x in enumerate(range(lonidx0, lonidx1, stepi)):
+                        if (k == 0):  # should consider internal node not repeated twice
+                            idx1 = np.append(
+                                idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
+                            loc1 = np.append(
+                                loc1, [[lonx[i], latx[i]]], axis=0)
+                        else:
+                            locx0 = x/arc - basex
+                            locx0i = int(locx0)
+                            dotx0i = locx0-locx0i-0.25/arc  # a small bias to make sure it's in grid
+                            locx1 = locx0i + dotx0i
+                            locy1 = m * locx1 + b
+                            y = gridded_arcsec(locy1, basey, arc)
+                            idx1 = np.append(
+                                idx1, [[y-mlatbase, x-mlonbase]], axis=0)
+                            loc1 = np.append(loc1, [[locx1, locy1]], axis=0)
+                            # print(x, locx0, dotx0i, locx1, locy1, y)
+                            lk = len(loc1)-1
+                            dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
+                                            (loc1[lk, 1], loc1[lk, 0])).km
+                            dis1 = np.append(dis1, dist, axis=None)
+
+                if i == len(lonx)-2 and lonidx1 != idx1[len(idx1)-1, 1] and latidx1 != idx1[len(idx1)-1, 0]:
+                    idx1 = np.append(
+                        idx1, [[latidx1-mlatbase, lonidx1-mlonbase]], axis=0)
+                    loc1 = np.append(loc1, [[lonx[i+1], latx[i+1]]], axis=0)
+                    lk = len(loc1)-1
+                    dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
+                                    (loc1[lk, 1], loc1[lk, 0])).km
+                    dis1 = np.append(dis1, dist, axis=None)
 
         # et = time.time()
         # print('Find index time: ', et-st, 'sec')
@@ -195,10 +245,17 @@ def zprofile(lon: str, lat: str):  # query: zprofSchema = Depends()):
         # print(ds_s1['elevation'].shape)
         xt1 = ds_s1['elevation'].values[tuple(idx1.T)]
         ds_s1.close()
-        df1 = pd.DataFrame({"longitude": loc1[:, 0].tolist(),
-                            "latitude": loc1[:, 1].tolist(),
-                            "z": xt1.tolist()},
-                            columns=['longitude', 'latitude', 'z'])
+        if format == 'row':
+            df1 = pd.DataFrame({"longitude": loc1[:, 0].tolist(),
+                                "latitude": loc1[:, 1].tolist(),
+                                "z": xt1.tolist(),
+                                "distance": dis1.tolist()},
+                               columns=['longitude', 'latitude', 'z', 'distance'])
+        else:
+            out = jsonable_encoder({"longitude": loc1[:, 0].tolist(),
+                                    "latitude": loc1[:, 1].tolist(),
+                                    "z": xt1.tolist(),
+                                    "distance": dis1.tolist()})
         # et = time.time()
         # print('Get value from index of points, time: ', et-st, 'sec')
         # return({"data": xt1})
@@ -208,7 +265,8 @@ def zprofile(lon: str, lat: str):  # query: zprofSchema = Depends()):
     # jt1 = orjson.dumps(xt1.tolist(), option=orjson.OPT_NAIVE_UTC |
     #                   orjson.OPT_SERIALIZE_NUMPY)
     # out = jsonable_encoder({"data": xt1.tolist()})
-    out = df1.to_dict(orient='records')
+    if format == 'row':
+        out = df1.to_dict(orient='records')
     # et = time.time()
     # print('4 Convert JSON by fastapi: ', et-st, 'sec')
     return JSONResponse(content=out)
