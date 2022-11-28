@@ -52,3 +52,4 @@
 **/.yarnrc
 **/GEBCO*.nc
 **/GEBCO*.zarr
+**/test_*.csv
