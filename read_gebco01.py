@@ -46,6 +46,15 @@ def gridded_arcsec(x, base=90, arc=3600/15):
     return((int(x) + base) * arc + math.ceil((x-int(x))*arc))
 
 
+def curDist(loc, dis=np.empty(shape=[0, 1], dtype=float)):
+    if len(loc) < 2:
+        return None
+    lk = len(loc)-1
+    return(np.append(dis,
+                     geodesic((loc[lk-1, 1], loc[lk-1, 0]),
+                              (loc[lk, 1], loc[lk, 0])).km))
+
+
 def numarr_query_validator(qry):
     if ',' in qry:
         try:
@@ -164,85 +173,96 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
                         idx1, [[latidx1-mlatbase, lonidx1-mlonbase]], axis=0)
                     loc1 = np.append(loc1, [[lonx[i+1], latx[i+1]]], axis=0)
             else:
-                if lon[i] == lon[i+1]:
+                if lonx[i] == lonx[i+1]:
                     stepi = -1 if latidx0 > latidx1 else 1
-                    for k, y in enumerate(range(latidx0, latidx1, stepi)):
-                        idx1 = np.append(
-                            idx1, [[y-mlatbase, lonidx0-mlonbase]], axis=0)
+                    rngi = range(latidx0, latidx1+stepi, stepi)
+                    leni = len(rngi)
+                    for k, y in enumerate(rngi):
                         locy0 = y/arc - basey
                         locy0i = int(locy0)
                         doty0i = locy0-locy0i-0.25/arc  # a small bias to make sure it's in grid
-                        #print("yi: ", y, locy0i + doty0i)
-                        loc1 = np.append(
-                            loc1, [[lonx[i], locy0i + doty0i]], axis=0)
-                        if i >= 1 or k >= 1:
-                            lk = len(loc1)-1
-                            dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
-                                            (loc1[lk, 1], loc1[lk, 0])).km
-                            dis1 = np.append(dis1, dist, axis=None)
-                elif lat[i] == lat[i+1]:
+                        locy1 = locy0i + doty0i
+                        if (k < (leni-1)) or (stepi == 1 and locy1 < latx[i+1]) or (stepi == -1 and locy1 > latx[i+1]):
+                            idx1 = np.append(
+                                idx1, [[y-mlatbase, lonidx0-mlonbase]], axis=0)
+                            loc1 = np.append(loc1, [[lonx[i], locy1]], axis=0)
+                            if i >= 1 or k >= 1:
+                                dis1 = curDist(loc1, dis1)
+
+                elif latx[i] == latx[i+1]:
                     stepi = -1 if lonidx0 > lonidx1 else 1
-                    for k, x in enumerate(range(lonidx0, lonidx1, stepi)):
-                        idx1 = np.append(
-                            idx1, [[latidx0-mlatbase, x-mlonbase]], axis=0)
+                    rngi = range(lonidx0, lonidx1+stepi, stepi)
+                    leni = len(rngi)
+                    for k, x in enumerate(rngi):
                         locx0 = x/arc - basex
                         locx0i = int(locx0)
                         dotx0i = locx0-locx0i-0.25/arc  # a small bias to make sure it's in grid
-                        #print("xi: ", x, locx0i + dotx0i)
-                        loc1 = np.append(
-                            loc1, [[locx0i + dotx0i, latx[i]]], axis=0)
-                        if i >= 1 or k >= 1:
-                            lk = len(loc1)-1
-                            dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
-                                            (loc1[lk, 1], loc1[lk, 0])).km
-                            dis1 = np.append(dis1, dist, axis=None)
+                        locx1 = locx0i + dotx0i
+                        if (k < (leni-1)) or (stepi == 1 and locx1 < lonx[i+1]) or (stepi == -1 and locx1 > lonx[i+1]):
+                            idx1 = np.append(
+                                idx1, [[latidx0-mlatbase, x-mlonbase]], axis=0)
+                            loc1 = np.append(loc1, [[locx1, latx[i]]], axis=0)
+                            if i >= 1 or k >= 1:
+                                dis1 = curDist(loc1, dis1)
+
                 else:
                     m = (latx[i+1]-latx[i])/(lonx[i+1]-lonx[i])
                     b = latx[i] - m * lonx[i]  # y = mx + b
                     # print("m, b:", m ,b)
-                    stepi = -1 if lonidx0 > lonidx1 else 1
-                    for k, x in enumerate(range(lonidx0, lonidx1, stepi)):
+                    if np.absolute(m) <= 1:
+                        lidx0 = lonidx0
+                        lidx1 = lonidx1
+                    else:
+                        lidx0 = latidx0
+                        lidx1 = latidx1
+
+                    stepi = -1 if lidx0 > lidx1 else 1
+                    rngi = range(lidx0, lidx1+stepi, stepi)
+                    leni = len(rngi)
+                    for k, s in enumerate(rngi):
                         if k == 0:  # should consider internal node not repeated twice
                             idx1 = np.append(
                                 idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
                             loc1 = np.append(
                                 loc1, [[lonx[i], latx[i]]], axis=0)
                             if i >= 1:
-                                lk = len(loc1)-1
-                                dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
-                                                (loc1[lk, 1], loc1[lk, 0])).km
-                                dis1 = np.append(dis1, dist, axis=None)
+                                dis1 = curDist(loc1, dis1)
 
                         else:
-                            locx0 = x/arc - basex
-                            locx0i = int(locx0)
-                            dotx0i = locx0-locx0i-0.25/arc  # a small bias to make sure it's in grid
-                            locx1 = locx0i + dotx0i
-                            locy1 = m * locx1 + b
-                            y = gridded_arcsec(locy1, basey, arc)
-                            idx1 = np.append(
-                                idx1, [[y-mlatbase, x-mlonbase]], axis=0)
-                            loc1 = np.append(loc1, [[locx1, locy1]], axis=0)
-                            # print(x, locx0, dotx0i, locx1, locy1, y)
-                            lk = len(loc1)-1
-                            dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
-                                            (loc1[lk, 1], loc1[lk, 0])).km
-                            dis1 = np.append(dis1, dist, axis=None)
+                            if np.absolute(m) <= 1:
+                                locx0 = s/arc - basex
+                                locx0i = int(locx0)
+                                dotx0i = locx0-locx0i-0.25/arc  # a small bias to make sure it's in grid
+                                locx1 = locx0i + dotx0i
+                                locy1 = m * locx1 + b
+                                if (k < (leni-1)) or (stepi == 1 and locx1 < lonx[i+1]) or (stepi == -1 and locx1 > lonx[i+1]):
+                                    y = gridded_arcsec(locy1, basey, arc)
+                                    idx1 = np.append(
+                                        idx1, [[y-mlatbase, s-mlonbase]], axis=0)
+                                    loc1 = np.append(
+                                        loc1, [[locx1, locy1]], axis=0)
+                                    dis1 = curDist(loc1, dis1)
+                            else:
+                                locy0 = s/arc - basey
+                                locy0i = int(locy0)
+                                doty0i = locy0-locy0i-0.25/arc
+                                locy1 = locy0i + doty0i
+                                locx1 = (locy1 - b)/m
+                                if (k < (leni-1)) or (stepi == 1 and locy1 < latx[i+1]) or (stepi == -1 and locy1 > latx[i+1]):
+                                    x = gridded_arcsec(locx1, basex, arc)
+                                    idx1 = np.append(
+                                        idx1, [[s-mlatbase, x-mlonbase]], axis=0)
+                                    loc1 = np.append(
+                                        loc1, [[locx1, locy1]], axis=0)
+                                    dis1 = curDist(loc1, dis1)
 
-                if i == len(lonx)-2 and lonidx1 != idx1[len(idx1)-1, 1] and latidx1 != idx1[len(idx1)-1, 0]:
+                if i == len(lonx)-2:
                     idx1 = np.append(
                         idx1, [[latidx1-mlatbase, lonidx1-mlonbase]], axis=0)
                     loc1 = np.append(loc1, [[lonx[i+1], latx[i+1]]], axis=0)
-                    lk = len(loc1)-1
-                    dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
-                                    (loc1[lk, 1], loc1[lk, 0])).km
-                    dis1 = np.append(dis1, dist, axis=None)
+                    dis1 = curDist(loc1, dis1)
 
-        # et = time.time()
-        # print('Find index time: ', et-st, 'sec')
-        # print(idx1)
         # np.savetxt("simu/test_loc.csv", loc1, delimiter=",", fmt='%f')
-
         # st = time.time()
         # mlon0 = np.min(lonx) #may cause slice offset to mlonbase, an offset +-1
         mlon1 = np.max(lonx) + 1.5/arc  # to make it larger
