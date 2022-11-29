@@ -10,3 +10,4 @@
 
 #### 0.1.2.2: fix slop>1 should use latitude-grid to count, not longitude; fix intra-segments lost/extra last point problem
 
+#### 0.1.2.3: fix typo when two points-grid are identical (lonx -- lon) and should calculate distance (not zero)

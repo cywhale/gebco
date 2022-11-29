@@ -48,7 +48,7 @@ def gridded_arcsec(x, base=90, arc=3600/15):
 
 def curDist(loc, dis=np.empty(shape=[0, 1], dtype=float)):
     if len(loc) < 2:
-        return None
+        return 0  # None
     lk = len(loc)-1
     return(np.append(dis,
                      geodesic((loc[lk-1, 1], loc[lk-1, 0]),
@@ -157,10 +157,10 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
             if lonidx0 == lonidx1 and latidx0 == latidx1:
                 idx1 = np.append(
                     idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
-                loc1 = np.append(loc1, [[lon[i], lat[i]]], axis=0)
+                loc1 = np.append(loc1, [[lonx[i], latx[i]]], axis=0)
                 # to match the same length
                 if i >= 1:
-                    dis1 = np.append(dis1, 0.0, axis=None)
+                    dis1 = curDist(loc1, dis1)
             elif zmode == 'point':
                 idx1 = np.append(
                     idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
