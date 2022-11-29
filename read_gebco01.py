@@ -1,6 +1,7 @@
 import xarray as xr
 import numpy as np
-import pandas as pd
+#import pandas as pd
+import polars as pl
 import math
 # import time
 # import orjson
@@ -122,7 +123,8 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
         loc1 = [lonx[0], latx[0]]
         xt1 = np.array([st1['elevation'].values])
         if format == 'row':
-            df1 = pd.DataFrame({"longitude": np.array([loc1[0]]).tolist(),
+            # df1= pd.DataFrame({"longitude": np.array([loc1[0]]).tolist(),
+            df1 = pl.DataFrame({"longitude": np.array([loc1[0]]).tolist(),
                                 "latitude": np.array([loc1[1]]).tolist(),
                                 "z": xt1.tolist(), "distance": np.array([0]).tolist()},
                                columns=['longitude', 'latitude', 'z', 'distance'])
@@ -154,14 +156,7 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
             latidx0 = gridded_arcsec(latx[i], basey, arc)
             lonidx1 = gridded_arcsec(lonx[i+1], basex, arc)
             latidx1 = gridded_arcsec(latx[i+1], basey, arc)
-            if lonidx0 == lonidx1 and latidx0 == latidx1:
-                idx1 = np.append(
-                    idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
-                loc1 = np.append(loc1, [[lonx[i], latx[i]]], axis=0)
-                # to match the same length
-                if i >= 1:
-                    dis1 = curDist(loc1, dis1)
-            elif zmode == 'point':
+            if zmode == 'point':
                 idx1 = np.append(
                     idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
                 loc1 = np.append(loc1, [[lonx[i], latx[i]]], axis=0)
@@ -172,6 +167,13 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
                     idx1 = np.append(
                         idx1, [[latidx1-mlatbase, lonidx1-mlonbase]], axis=0)
                     loc1 = np.append(loc1, [[lonx[i+1], latx[i+1]]], axis=0)
+            elif lonidx0 == lonidx1 and latidx0 == latidx1:
+                idx1 = np.append(
+                    idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
+                loc1 = np.append(loc1, [[lonx[i], latx[i]]], axis=0)
+                # to match the same length
+                if i >= 1:
+                    dis1 = curDist(loc1, dis1)
             else:
                 if lonx[i] == lonx[i+1]:
                     stepi = -1 if latidx0 > latidx1 else 1
@@ -277,7 +279,8 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
         xt1 = ds_s1['elevation'].values[tuple(idx1.T)]
         ds_s1.close()
         if format == 'row':
-            df1 = pd.DataFrame({"longitude": loc1[:, 0].tolist(),
+            # df1= pd.DataFrame({"longitude": loc1[:, 0].tolist(),
+            df1 = pl.DataFrame({"longitude": loc1[:, 0].tolist(),
                                 "latitude": loc1[:, 1].tolist(),
                                 "z": xt1.tolist(),
                                 "distance": dis1.tolist()},
@@ -297,7 +300,8 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
     #                   orjson.OPT_SERIALIZE_NUMPY)
     # out = jsonable_encoder({"data": xt1.tolist()})
     if format == 'row':
-        out = df1.to_dict(orient='records')
+        # out= df1.to_dict(orient='records') #by using pandas
+        out = df1.to_dicts()  # by polars
     # et = time.time()
     # print('4 Convert JSON by fastapi: ', et-st, 'sec')
     return JSONResponse(content=out)

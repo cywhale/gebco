@@ -9,6 +9,10 @@
 #### statics: sum the distances
 # gawk -F',' '{ sum += $1 } END{ print sum, NR }'  simu/test_dis.csv
 
+#### others
+#### requirements
+# pipreqs --force ./
+
 # https
 source "$HOME/python/py38/bin/activate"
 cd "$HOME/python/gebco"
