@@ -6,4 +6,4 @@
 
 #### use geopy.geodesic to output distance between two points
 
-
+#### 0.1.2.1: fix start-point in intra-segments should append distance, vertical/horizontal should judged by points, not grids

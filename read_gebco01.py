@@ -146,9 +146,12 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
             lonidx1 = gridded_arcsec(lonx[i+1], basex, arc)
             latidx1 = gridded_arcsec(latx[i+1], basey, arc)
             if lonidx0 == lonidx1 and latidx0 == latidx1:
-                idx1 = np.append(  # Note that idx1 is latitude first for zarr, but loc1 is longitude first for geojson
+                idx1 = np.append(
                     idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
-                loc1 = np.append(loc1, [[lonx[i], latx[i]]], axis=0)
+                loc1 = np.append(loc1, [[lon[i], lat[i]]], axis=0)
+                # to match the same length
+                if i >= 1:
+                    dis1 = np.append(dis1, 0.0, axis=None)
             elif zmode == 'point':
                 idx1 = np.append(
                     idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
@@ -161,7 +164,7 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
                         idx1, [[latidx1-mlatbase, lonidx1-mlonbase]], axis=0)
                     loc1 = np.append(loc1, [[lonx[i+1], latx[i+1]]], axis=0)
             else:
-                if lonidx0 == lonidx1:
+                if lon[i] == lon[i+1]:
                     stepi = -1 if latidx0 > latidx1 else 1
                     for k, y in enumerate(range(latidx0, latidx1, stepi)):
                         idx1 = np.append(
@@ -172,12 +175,12 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
                         #print("yi: ", y, locy0i + doty0i)
                         loc1 = np.append(
                             loc1, [[lonx[i], locy0i + doty0i]], axis=0)
-                        if k >= 1:
+                        if i >= 1 or k >= 1:
                             lk = len(loc1)-1
                             dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
                                             (loc1[lk, 1], loc1[lk, 0])).km
                             dis1 = np.append(dis1, dist, axis=None)
-                elif latidx0 == latidx1:
+                elif lat[i] == lat[i+1]:
                     stepi = -1 if lonidx0 > lonidx1 else 1
                     for k, x in enumerate(range(lonidx0, lonidx1, stepi)):
                         idx1 = np.append(
@@ -188,7 +191,7 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
                         #print("xi: ", x, locx0i + dotx0i)
                         loc1 = np.append(
                             loc1, [[locx0i + dotx0i, latx[i]]], axis=0)
-                        if k >= 1:
+                        if i >= 1 or k >= 1:
                             lk = len(loc1)-1
                             dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
                                             (loc1[lk, 1], loc1[lk, 0])).km
@@ -204,6 +207,12 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
                                 idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
                             loc1 = np.append(
                                 loc1, [[lonx[i], latx[i]]], axis=0)
+                            if i >= 1:
+                                lk = len(loc1)-1
+                                dist = geodesic((loc1[lk-1, 1], loc1[lk-1, 0]),
+                                                (loc1[lk, 1], loc1[lk, 0])).km
+                                dis1 = np.append(dis1, dist, axis=None)
+
                         else:
                             locx0 = x/arc - basex
                             locx0i = int(locx0)
