@@ -1,0 +1,123 @@
+{
+  "openapi": "3.0.2",
+  "info": {
+    "title": "ODB API for GEBCO Bathymetry",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://ecodata.odb.ntu.edu.tw"
+    }
+  ],
+  "paths": {
+    "/gebco": {
+      "get": {
+        "summary": "Z-profile along geo-points by using GEBCO data",
+        "tags": [
+          "GEBCO"
+        ],
+        "operationId": "zprofile_gebco_get",
+        "parameters": [
+          {
+            "required": true,
+            "schema": {
+              "title": "longitude",
+              "type": "string"
+            },
+            "name": "lon",
+            "in": "query"
+          },
+          {
+            "required": true,
+            "schema": {
+              "title": "latitude",
+              "type": "string"
+            },
+            "name": "lat",
+            "in": "query"
+          },
+          {
+            "required": false,
+            "schema": {
+              "title": "mode",
+              "type": "string"
+            },
+            "name": "mode",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    "$ref": "#/components/response/GebcoColumns",
+                    "$ref": "#/components/response/GebcoRows"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "response": {
+      "GebcoColumns": {
+        "title": "Column-format output of GEBCO (default)",
+        "type": "object",
+        "properties": {
+          "longitude": {
+            "title": "Longitude",
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "latitude": {
+            "title": "Latiitude",
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "z": {
+            "title": "Topo/elevation/depth",
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "distance": {
+            "title": "Geo-distances between two points",
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        }
+      },
+      "GebcoRows": {
+        "title": "Row-format output of GEBCO (mode=row)",
+        "type": "object",
+        "properties": {
+          "longitude": {
+            "type": "number"
+          },
+          "latitude": {
+            "type": "number"
+          },
+          "z": {
+            "type": "number"
+          },
+          "distance": {
+            "type": "number"
+          }
+        }
+      }
+    }
+  }
+}
