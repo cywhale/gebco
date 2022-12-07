@@ -48,13 +48,13 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "Success: column-lists/rows of longitude/latitude/z/distance",
             "content": {
               "application/json": {
                 "schema": {
                   "oneOf": [
-                    "$ref": "#/components/response/GebcoColumns",
-                    "$ref": "#/components/response/GebcoRows"
+                    {"$ref": "#/components/schemas/column-lists"},
+                    {"$ref": "#/components/schemas/records"}
                   ]
                 }
               }
@@ -65,34 +65,30 @@
     }
   },
   "components": {
-    "response": {
-      "GebcoColumns": {
-        "title": "Column-format output of GEBCO (default)",
+    "schemas": {
+      "column-lists": {
+        "description": "Column-format lists(default)",
         "type": "object",
         "properties": {
           "longitude": {
-            "title": "Longitude",
             "type": "array",
             "items": {
               "type": "number"
             }
           },
           "latitude": {
-            "title": "Latiitude",
             "type": "array",
             "items": {
               "type": "number"
             }
           },
           "z": {
-            "title": "Topo/elevation/depth",
             "type": "array",
             "items": {
               "type": "number"
             }
           },
           "distance": {
-            "title": "Geo-distances between two points",
             "type": "array",
             "items": {
               "type": "number"
@@ -100,21 +96,24 @@
           }
         }
       },
-      "GebcoRows": {
-        "title": "Row-format output of GEBCO (mode=row)",
-        "type": "object",
-        "properties": {
-          "longitude": {
-            "type": "number"
-          },
-          "latitude": {
-            "type": "number"
-          },
-          "z": {
-            "type": "number"
-          },
-          "distance": {
-            "type": "number"
+      "records": {
+        "description": "Rows of GEBCO data(mode=row)",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "longitude": {
+              "type": "number"
+            },  
+            "latitude": {
+              "type": "number"
+            },
+            "z": {
+              "type": "number"
+            },
+            "distance": {
+              "type": "number"
+            }
           }
         }
       }

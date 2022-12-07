@@ -2,7 +2,9 @@
 #### most-performant, add worker, --threads, --worker-connections seems no extra benefits
 # gunicorn read_gebco01:app -w 4 -k uvicorn.workers.UvicornWorker --reload
 #### maximum no-error limit (if -p 3, always throw error)
-# autocannon -c 100 -d 4 -p 2 -w 3 http://localhost:8000/
+# use simulation file
+# gunicorn simu_gebco01:app -w 4 -k uvicorn.workers.UvicornWorker --reload
+# autocannon -c 100 -d 4 -p 2 -w 3 http://localhost:8000/gebco
 #### delete gunicorn proc
 # ps -ef | grep 'gunicorn' | grep -v grep | awk '{print $2}' | xargs -r kill -9
 
