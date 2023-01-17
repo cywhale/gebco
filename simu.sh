@@ -19,3 +19,8 @@
 source "$HOME/python/py38/bin/activate"
 cd "$HOME/python/gebco"
 gunicorn read_gebco01:app -w 4 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload
+
+# pm2 start
+pm2 start ./conf/ecosystem.config.js
+
+

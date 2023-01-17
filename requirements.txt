@@ -1,6 +1,6 @@
-dask==2022.12.0
-fastapi==0.88.0
+dask==2023.1.0
+fastapi==0.89.1
 geopy==2.3.0
-numpy==1.23.5
-polars==0.15.2
-xarray==2022.3.0
+numpy==1.24.1
+polars==0.15.15
+xarray==2022.12.0

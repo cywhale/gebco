@@ -17,3 +17,5 @@
 ## ver 0.2 Breaking: add crossing 0-/180- (prime/anti meridian) mode 20221201
 
 #### add gebco_v1.json for openapi(apiverse)
+#### upgrade package versions (requirements.txt) 20230117
+

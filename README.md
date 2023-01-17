@@ -1,6 +1,6 @@
 # FastAPI of GEBCO bathymetry
 
-[![DOI](https://zenodo.org/badge/569195036.svg)](https://zenodo.org/badge/latestdoi/569195036)
+[![DOI](https://zenodo.org/badge/doi/10.5281/zenodo.7502986.svg)](https://doi.org/10.5281/zenodo.7502986)
 
 
 #### Usage
