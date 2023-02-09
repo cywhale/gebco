@@ -19,3 +19,6 @@
 #### add gebco_v1.json for openapi(apiverse)
 #### upgrade package versions (requirements.txt) 20230117
 
+## ver 0.2.1 Upgrade to python3.10 xarray v2023.02.0 drop py3.8
+
+#### https://github.com/pydata/xarray/releases/tag/v2023.02.0

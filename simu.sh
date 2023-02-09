@@ -24,3 +24,20 @@ gunicorn read_gebco01:app -w 4 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:801
 pm2 start ./conf/ecosystem.config.js
 
 
+#### pyenv to upgrade python version (if needed)
+deactivate
+cd ~/python
+curl https://pyenv.run | bash
+# ./bashrc
+# echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc
+##### should append, not directly echo 'export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc
+# echo -e 'if command -v pyenv 1>/dev/null 2>&1; then\n eval "$(pyenv init -)"\nfi' >> ~/.bashrc
+exec $SHELL #souce ~/.bashrc
+pyenv update
+pyenv versions
+pyenv install 3.10:latest
+pyenv local 3.10.10
+python3.10 -m venv py310
+
+
+

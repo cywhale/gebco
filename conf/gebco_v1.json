@@ -6,7 +6,7 @@
   },
   "servers": [
     {
-      "url": "https://ecodata.odb.ntu.edu.tw"
+      "url": "https://api.odb.ntu.edu.tw"
     }
   ],
   "paths": {
