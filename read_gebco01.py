@@ -1,6 +1,6 @@
 import xarray as xr
 import numpy as np
-#import pandas as pd
+# import pandas as pd
 import polars as pl
 import math
 # import time
@@ -54,24 +54,24 @@ def curDist(loc, dis=np.empty(shape=[0, 1], dtype=float)):
     if len(loc) < 2:
         return 0  # None
     lk = len(loc)-1
-    return(np.append(dis,
-                     geodesic((loc[lk-1, 1], loc[lk-1, 0]),
-                              (loc[lk, 1], loc[lk, 0])).km))
+    return (np.append(dis,
+                      geodesic((loc[lk-1, 1], loc[lk-1, 0]),
+                               (loc[lk, 1], loc[lk, 0])).km))
 
 
 def numarr_query_validator(qry):
     if ',' in qry:
         try:
             out = np.array([float(x.strip()) for x in qry.split(',')])
-            return(out)
+            return (out)
         except ValueError:
-            return("Format Error")
+            return ("Format Error")
     else:
         try:
             out = np.array([float(qry.strip())])
-            return(out)
+            return (out)
         except ValueError:
-            return("Format Error")
+            return ("Format Error")
 
 
 @app.get("/gebco")
@@ -119,8 +119,8 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
             # df1= pd.DataFrame({"longitude": np.array([loc1[0]]).tolist(),
             df1 = pl.DataFrame({"longitude": np.array([loc1[0]]).tolist(),
                                 "latitude": np.array([loc1[1]]).tolist(),
-                                "z": xt1.tolist(), "distance": np.array([0]).tolist()},
-                               columns=['longitude', 'latitude', 'z', 'distance'])
+                                "z": xt1.tolist(), "distance": np.array([0]).tolist()})  # ,
+            # columns=['longitude', 'latitude', 'z', 'distance']) # modified for polars v0.17.x
         else:
             out = jsonable_encoder({"longitude": np.array([loc1[0]]).tolist(),
                                     "latitude": np.array([loc1[1]]).tolist(),
@@ -136,7 +136,7 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
             lonk = np.asarray(ats[0])
             latk = np.asarray(ats[1])
             brks = ats[2]
-            #autoFly = ats[3]
+            # autoFly = ats[3]
             # dirFlag = ats[4] #deprecated
         idx1 = np.empty(shape=[0, 2], dtype=np.int16)
         loc1 = np.empty(shape=[0, 2], dtype=float)
@@ -314,11 +314,12 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
         ds_s1.close()
         if format == 'row':
             # df1= pd.DataFrame({"longitude": loc1[:, 0].tolist(),
-            df1 = pl.DataFrame({"longitude": loc1[:, 0].tolist(),
-                                "latitude": loc1[:, 1].tolist(),
-                                "z": xt1.tolist(),
-                                "distance": dis1.tolist()},
-                               columns=['longitude', 'latitude', 'z', 'distance'])
+            df1 = pl.DataFrame({"longitude": loc1[:, 0],  # .tolist(),
+                                "latitude": loc1[:, 1],  # .tolist(),
+                                "z": xt1,  # .tolist(),
+                                "distance": dis1})  # .tolist()},
+            # columns=['longitude', 'latitude', 'z', 'distance']) #no need after polars v0.17.x
+
         else:
             out = jsonable_encoder({"longitude": loc1[:, 0].tolist(),
                                     "latitude": loc1[:, 1].tolist(),
