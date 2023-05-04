@@ -9,7 +9,7 @@ from geopy.distance import geodesic
 from fastapi import FastAPI, status  # , Depends
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from typing import Union
+from typing import Union #, Optional
 # from loggerConfig import logger
 # from models import zprofSchema
 from xmeridian import *
@@ -21,7 +21,7 @@ dask.config.set(pool=Pool(4))  # , scheduler='processes', num_workers=4)
 
 
 app = FastAPI()
-
+#ds = None  # Declare ds as a global variable
 arcsec = 15
 arc = int(3600/arcsec)  # 15 arc-second
 basex = 180  # -180 - 180 <==> 0 - 360, half is 180
@@ -33,6 +33,9 @@ subsetFlag = True
 
 @app.on_event("startup")
 async def startup():
+    #if 'ds' in kwargs:
+    #    ds = kwargs['ds']
+    #else:
     global ds
     # logger.info
     ds = xr.open_zarr(
@@ -73,15 +76,20 @@ def numarr_query_validator(qry):
         except ValueError:
             return ("Format Error")
 
-
 @app.get("/gebco")
 def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
     loni = numarr_query_validator(lon)
     lati = numarr_query_validator(lat)
     if isinstance(loni, str) or isinstance(lati, str):
+        #if mode is not None and 'dataframe' in mode.lower():
+        #    return empty_data()
+        #else: 
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content=jsonable_encoder({"Error": "Check your input format should be comma-separated values"}))
 
+    #if 'ds' in kwargs:
+    #    ds = kwargs['ds']
+    #else:
     global ds
     global arcsec
     global arc
@@ -99,9 +107,14 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
             zmode = 'point'
         if 'row' in mode.lower():
             format = 'row'
+        #if 'dataframe' in mode.lower():
+        #    format = 'dataframe'    
 
     if len(loni) != len(lati):
         ds.close()
+        #if mode == 'dataframe':
+        #    return empty_data()
+        #else:
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content=jsonable_encoder({"Error": "Check your input of lon/lat should be in equal length"}))
 
@@ -332,6 +345,8 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
     # jt1 = orjson.dumps(xt1.tolist(), option=orjson.OPT_NAIVE_UTC |
     #                   orjson.OPT_SERIALIZE_NUMPY)
     # out = jsonable_encoder({"data": xt1.tolist()})
+    #if format == 'dataframe':
+    #    return df1
     if format == 'row':
         # out= df1.to_dict(orient='records') #by using pandas
         out = df1.to_dicts()  # by polars

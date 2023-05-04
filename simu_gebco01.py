@@ -1,27 +1,27 @@
 import xarray as xr
 import numpy as np
-#import pandas as pd
+# import pandas as pd
 import polars as pl
 import math
-import time
+# import time
 # import orjson
 from geopy.distance import geodesic
 from fastapi import FastAPI, status  # , Depends
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from typing import Union
+from typing import Union #, Optional
 # from loggerConfig import logger
 # from models import zprofSchema
 from xmeridian import *
 
 import dask
-from multiprocessing.pool import Pool
-dask.config.set(pool=Pool(4))  # , scheduler='processes', num_workers=4)
+# from multiprocessing.pool import Pool
+# dask.config.set(pool=Pool(4))  # , scheduler='processes', num_workers=4)
 # dask.set_options(get=dask.get_sync)
 
 
-app = FastAPI()
-
+#app = FastAPI()
+#ds = None  # Declare ds as a global variable
 arcsec = 15
 arc = int(3600/arcsec)  # 15 arc-second
 basex = 180  # -180 - 180 <==> 0 - 360, half is 180
@@ -29,21 +29,18 @@ basey = 90  # -90 - 90 <==> 0 - 180, half is 90
 halfxidx = 180 * arc  # in netcdf, longitude length = 86400
 halfyidx = 90 * arc  # in netcdf, latitude length = 43200
 subsetFlag = True
-lon = '179.8465,179.9015,-179.8502, 179.88'
-lat = '0.163806258890185, 0.074795994003052, -0.264, -0.274'
-format = 'row'
-gbl_count = 0
 
 
-@app.on_event("startup")
-async def startup():
-    global ds
-    global gbl_count
-    # logger.info
-    ds = xr.open_zarr(
+#@app.on_event("startup")
+#async def startup(**kwargs):
+    #if 'ds' in kwargs:
+    #    ds = kwargs['ds']
+    #else:
+global ds
+#logger.info
+ds = xr.open_zarr(
         'GEBCO_2022_sub_ice_topo.zarr', chunks='auto', group='gebco',
         decode_cf=False, decode_times=False)
-    gbl_count = gbl_count + 1  # for simulation
 
 # @app.on_event("shutdown")
 # def release_dataset():
@@ -60,37 +57,48 @@ def curDist(loc, dis=np.empty(shape=[0, 1], dtype=float)):
     if len(loc) < 2:
         return 0  # None
     lk = len(loc)-1
-    return(np.append(dis,
-                     geodesic((loc[lk-1, 1], loc[lk-1, 0]),
-                              (loc[lk, 1], loc[lk, 0])).km))
+    return (np.append(dis,
+                      geodesic((loc[lk-1, 1], loc[lk-1, 0]),
+                               (loc[lk, 1], loc[lk, 0])).km))
 
 
 def numarr_query_validator(qry):
     if ',' in qry:
         try:
             out = np.array([float(x.strip()) for x in qry.split(',')])
-            return(out)
+            return (out)
         except ValueError:
-            return("Format Error")
+            return ("Format Error")
     else:
         try:
             out = np.array([float(qry.strip())])
-            return(out)
+            return (out)
         except ValueError:
-            return("Format Error")
+            return ("Format Error")
 
+def empty_data():
+    _columns = {
+        "longitude": pl.Float64,
+        "latitude": pl.Float64,
+        "z": pl.Float64
+    }
+    return pl.DataFrame(schema=_columns)
 
-@app.get("/gebco")
-def zprofile(mode: Union[str, None] = None):
-    st = time.time()
-    global lon, lat, format, gbl_count  # for simulation
+def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
     loni = numarr_query_validator(lon)
     lati = numarr_query_validator(lat)
     if isinstance(loni, str) or isinstance(lati, str):
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
-                            content=jsonable_encoder({"Error": "Check your input format should be comma-separated values"}))
+        if mode is not None and 'dataframe' in mode.lower():
+            return empty_data()
+        else: 
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
+                                content=jsonable_encoder({"Error": "Check your input format should be comma-separated values"}))
 
+    #if 'ds' in kwargs:
+    #    ds = kwargs['ds']
+    #else:
     global ds
+    #print(type(ds))
     global arcsec
     global arc
     global basex
@@ -99,19 +107,27 @@ def zprofile(mode: Union[str, None] = None):
     global halfyidx
     global subsetFlag
 
-    # format = 'default' # for simulation
+    format = 'default'
     # i.e, output all gridded points along the line; otherwise 'point', output only end-points.
     zmode = 'line'
+    zonly = False
     if mode is not None:
+        if 'zonly' in mode.lower():
+            zonly = True
         if 'point' in mode.lower():
             zmode = 'point'
-        if 'default' in mode.lower():
-            format = 'default'  # for simulation
+        if 'row' in mode.lower():
+            format = 'row'
+        if 'dataframe' in mode.lower():
+            format = 'dataframe'    
 
     if len(loni) != len(lati):
         ds.close()
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
-                            content=jsonable_encoder({"Error": "Check your input of lon/lat should be in equal length"}))
+        if mode == 'dataframe':
+            return empty_data()
+        else:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
+                                content=jsonable_encoder({"Error": "Check your input of lon/lat should be in equal length"}))
 
     # May not have exact lon, lat in gridded lon-lat, so need to calculate index
     elif len(loni) == 1:
@@ -123,12 +139,12 @@ def zprofile(mode: Union[str, None] = None):
         ds.close()
         loc1 = [loni[0], lati[0]]
         xt1 = np.array([st1['elevation'].values])
-        if format == 'row':
+        if format == 'row' or format == 'dataframe':
             # df1= pd.DataFrame({"longitude": np.array([loc1[0]]).tolist(),
             df1 = pl.DataFrame({"longitude": np.array([loc1[0]]).tolist(),
                                 "latitude": np.array([loc1[1]]).tolist(),
-                                "z": xt1.tolist(), "distance": np.array([0]).tolist()},
-                               columns=['longitude', 'latitude', 'z', 'distance'])
+                                "z": xt1.tolist(), "distance": np.array([0]).tolist()})  # ,
+            # columns=['longitude', 'latitude', 'z', 'distance']) # modified for polars v0.17.x
         else:
             out = jsonable_encoder({"longitude": np.array([loc1[0]]).tolist(),
                                     "latitude": np.array([loc1[1]]).tolist(),
@@ -144,7 +160,7 @@ def zprofile(mode: Union[str, None] = None):
             lonk = np.asarray(ats[0])
             latk = np.asarray(ats[1])
             brks = ats[2]
-            #autoFly = ats[3]
+            # autoFly = ats[3]
             # dirFlag = ats[4] #deprecated
         idx1 = np.empty(shape=[0, 2], dtype=np.int16)
         loc1 = np.empty(shape=[0, 2], dtype=float)
@@ -182,9 +198,10 @@ def zprofile(mode: Union[str, None] = None):
                     idx1 = np.append(
                         idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
                     loc1 = np.append(loc1, [[lonx[i], latx[i]]], axis=0)
-                    dist = geodesic((latx[i], lonx[i]),
-                                    (latx[i+1], lonx[i+1])).km
-                    dis1 = np.append(dis1, dist, axis=None)
+                    if not zonly:
+                        dist = geodesic((latx[i], lonx[i]),
+                                        (latx[i+1], lonx[i+1])).km
+                        dis1 = np.append(dis1, dist, axis=None)
                     if i == len(lonx)-2:
                         idx1 = np.append(
                             idx1, [[latidx1-mlatbase, lonidx1-mlonbase]], axis=0)
@@ -195,7 +212,7 @@ def zprofile(mode: Union[str, None] = None):
                         idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
                     loc1 = np.append(loc1, [[lonx[i], latx[i]]], axis=0)
                     # to match the same length
-                    if i >= 1:
+                    if i >= 1 and not zonly:
                         dis1 = curDist(loc1, dis1)
                 else:
                     if lonx[i] == lonx[i+1]:
@@ -214,7 +231,7 @@ def zprofile(mode: Union[str, None] = None):
                                     idx1, [[y-mlatbase, lonidx0-mlonbase]], axis=0)
                                 loc1 = np.append(
                                     loc1, [[lonx[i], locy1]], axis=0)
-                                if i >= 1 or k >= 1:
+                                if not zonly and (i >= 1 or k >= 1):
                                     dis1 = curDist(loc1, dis1)
 
                     elif latx[i] == latx[i+1]:
@@ -233,7 +250,7 @@ def zprofile(mode: Union[str, None] = None):
                                     idx1, [[latidx0-mlatbase, x-mlonbase]], axis=0)
                                 loc1 = np.append(
                                     loc1, [[locx1, latx[i]]], axis=0)
-                                if i >= 1 or k >= 1:
+                                if not zonly and (i >= 1 or k >= 1):
                                     dis1 = curDist(loc1, dis1)
 
                     else:
@@ -255,7 +272,7 @@ def zprofile(mode: Union[str, None] = None):
                                     idx1, [[latidx0-mlatbase, lonidx0-mlonbase]], axis=0)
                                 loc1 = np.append(
                                     loc1, [[lonx[i], latx[i]]], axis=0)
-                                if i >= 1:
+                                if i >= 1 and not zonly:
                                     dis1 = curDist(loc1, dis1)
 
                             else:
@@ -275,7 +292,8 @@ def zprofile(mode: Union[str, None] = None):
                                             idx1, [[y-mlatbase, s-mlonbase]], axis=0)
                                         loc1 = np.append(
                                             loc1, [[locx1, locy1]], axis=0)
-                                        dis1 = curDist(loc1, dis1)
+                                        if not zonly:
+                                            dis1 = curDist(loc1, dis1)
                                 else:
                                     locy0 = (s+1)/arc - basey
                                     locy0i = int(locy0)
@@ -292,18 +310,21 @@ def zprofile(mode: Union[str, None] = None):
                                             idx1, [[s-mlatbase, x-mlonbase]], axis=0)
                                         loc1 = np.append(
                                             loc1, [[locx1, locy1]], axis=0)
-                                        dis1 = curDist(loc1, dis1)
+                                        if not zonly:
+                                            dis1 = curDist(loc1, dis1)
 
                 if zmode != 'point' and i == len(lonx)-2:
                     idx1 = np.append(
                         idx1, [[latidx1-mlatbase, lonidx1-mlonbase]], axis=0)
                     loc1 = np.append(loc1, [[lonx[i+1], latx[i+1]]], axis=0)
-                    dis1 = curDist(loc1, dis1)
+                    if not zonly:
+                        dis1 = curDist(loc1, dis1)
             # end loop-i
             if brk != -1:
-                dist = geodesic((latk[brk], lonk[brk]),
-                                (latk[brk+1], lonk[brk+1])).km
-                dis1 = np.append(dis1, dist, axis=None)
+                if not zonly:
+                    dist = geodesic((latk[brk], lonk[brk]),
+                                    (latk[brk+1], lonk[brk+1])).km
+                    dis1 = np.append(dis1, dist, axis=None)
                 preidx = brk+1
         # end loop-brks
         # np.savetxt("simu/test_loc.csv", loc1, delimiter=",", fmt='%f')
@@ -320,18 +341,30 @@ def zprofile(mode: Union[str, None] = None):
         ds.close()
         xt1 = ds_s1['elevation'].values[tuple(idx1.T)]
         ds_s1.close()
-        if format == 'row':
+        if format == 'row' or format == 'dataframe':
+            if not zonly:
             # df1= pd.DataFrame({"longitude": loc1[:, 0].tolist(),
-            df1 = pl.DataFrame({"longitude": loc1[:, 0].tolist(),
-                                "latitude": loc1[:, 1].tolist(),
-                                "z": xt1.tolist(),
-                                "distance": dis1.tolist()},
-                               columns=['longitude', 'latitude', 'z', 'distance'])
+                df1 = pl.DataFrame({"longitude": loc1[:, 0],  # .tolist(),
+                                    "latitude": loc1[:, 1],  # .tolist(),
+                                    "z": xt1,  # .tolist(),
+                                   "distance": dis1})  # .tolist()},
+            else:
+                df1 = pl.DataFrame({"longitude": loc1[:, 0],
+                                    "latitude": loc1[:, 1],
+                                    "z": xt1})              
+            # print("Test df1:", df1)
+            # columns=['longitude', 'latitude', 'z', 'distance']) #no need after polars v0.17.x
+
         else:
-            out = jsonable_encoder({"longitude": loc1[:, 0].tolist(),
-                                    "latitude": loc1[:, 1].tolist(),
-                                    "z": xt1.tolist(),
-                                    "distance": dis1.tolist()})
+            if not zonly:
+                out = jsonable_encoder({"longitude": loc1[:, 0].tolist(),
+                                        "latitude": loc1[:, 1].tolist(),
+                                        "z": xt1.tolist(),
+                                        "distance": dis1.tolist()})
+            else:
+                out = jsonable_encoder({"longitude": loc1[:, 0].tolist(),
+                                        "latitude": loc1[:, 1].tolist(),
+                                        "z": xt1.tolist()})                
         # return({"data": xt1})
         # np.savetxt("simu/test_zseg.csv", pt1, delimiter=",", fmt='%f')
 
@@ -339,13 +372,17 @@ def zprofile(mode: Union[str, None] = None):
     # jt1 = orjson.dumps(xt1.tolist(), option=orjson.OPT_NAIVE_UTC |
     #                   orjson.OPT_SERIALIZE_NUMPY)
     # out = jsonable_encoder({"data": xt1.tolist()})
+    if format == 'dataframe':
+        return df1
     if format == 'row':
         # out= df1.to_dict(orient='records') #by using pandas
         out = df1.to_dicts()  # by polars
-    et = time.time()
-    print('Duration: execution all: ', et-st, 'sec')
-    print('Size of output dataframe (row: 172 /col: 4): ',
-          df1.shape[0], df1.shape[1])
-    print('Last z should be -5326: ', xt1[-1])
-    print('Execute times: ', gbl_count)
+    # et = time.time()
+    # print('4 Convert JSON by fastapi: ', et-st, 'sec')
     return JSONResponse(content=out)
+
+
+#print(zprofile(lon='123,123.15', lat='22.13,22', mode='dataframe'))
+#print(zprofile(lon='123,123.15', lat='22.13,22', mode='dataframe,zonly'))
+#out = zprofile(lon='123,123.15', lat='22.13', mode='dataframe')
+#print(out)

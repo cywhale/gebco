@@ -1,6 +1,6 @@
 #!/bin/bash
 #### most-performant, add worker, --threads, --worker-connections seems no extra benefits
-# gunicorn read_gebco01:app -w 4 -k uvicorn.workers.UvicornWorker --reload
+# gunicorn gebco_app:app -w 4 -k uvicorn.workers.UvicornWorker --reload
 #### maximum no-error limit (if -p 3, always throw error)
 # use simulation file
 # gunicorn simu_gebco01:app -w 4 -k uvicorn.workers.UvicornWorker --reload
@@ -18,7 +18,7 @@
 # https
 source "$HOME/python/py38/bin/activate"
 cd "$HOME/python/gebco"
-gunicorn read_gebco01:app -w 4 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload
+gunicorn gebco_app:app -w 4 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload
 
 # pm2 start
 pm2 start ./conf/ecosystem.config.js
