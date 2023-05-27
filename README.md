@@ -2,6 +2,9 @@
 
 [![DOI](https://zenodo.org/badge/doi/10.5281/zenodo.7502986.svg)](https://doi.org/10.5281/zenodo.7502986)
 
+#### Swagger API doc
+
+https://api.odb.ntu.edu.tw/gebco/swagger
 
 #### Usage
 1. Records-output (in JSON) of z-profile (and distances) between longitude/latitude points with 15-arcsec resolutions
