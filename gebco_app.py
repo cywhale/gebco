@@ -4,12 +4,17 @@ import numpy as np
 import polars as pl
 import math
 # import time
-# import orjson
 from geopy.distance import geodesic
-from fastapi import FastAPI, status  # , Depends
+from fastapi import FastAPI, status, Query #, HTTPException, Depends
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from typing import Union #, Optional
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+from typing import Optional #, Union
+#from pydantic import BaseModel, ValidationError, HttpUrl, validator
+import requests #, httpx
+import json
+# import orjson
 # from loggerConfig import logger
 # from models import zprofSchema
 from xmeridian import *
@@ -19,8 +24,38 @@ from multiprocessing.pool import Pool
 dask.config.set(pool=Pool(4))  # , scheduler='processes', num_workers=4)
 # dask.set_options(get=dask.get_sync)
 
+def generate_custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title="ODB API for GEBCO Bathymetry",
+        version="1.0.0",
+        description="Z-profile (and distances) between longitude/latitude points with 15-arcsec resolutions.\n" +
+                    "Data source: GEBCO Compilation Group (2022) GEBCO_2022 Grid (doi:10.5285/e0f0bb80-ab44-2739-e053-6c86abc0289c)",
+        routes=app.routes,
+    )
+    openapi_schema["servers"] = [
+        {
+            "url": "https://api.odb.ntu.edu.tw"
+        }
+    ]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
 
-app = FastAPI()
+app = FastAPI(docs_url=None)
+
+@app.get("/gebco/openapi.json", include_in_schema=False)
+async def custom_openapi():
+    return JSONResponse(generate_custom_openapi()) #app.openapi()) modify to customize openapi.json
+
+@app.get("/gebco/swagger", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url="/gebco/openapi.json", #app.openapi_url
+        title= app.title
+    )
+
+### Global variables ###
 #ds = None  # Declare ds as a global variable
 arcsec = 15
 arc = int(3600/arcsec)  # 15 arc-second
@@ -61,7 +96,6 @@ def curDist(loc, dis=np.empty(shape=[0, 1], dtype=float)):
                       geodesic((loc[lk-1, 1], loc[lk-1, 0]),
                                (loc[lk, 1], loc[lk, 0])).km))
 
-
 def numarr_query_validator(qry):
     if ',' in qry:
         try:
@@ -76,20 +110,60 @@ def numarr_query_validator(qry):
         except ValueError:
             return ("Format Error")
 
-@app.get("/gebco")
-def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
-    loni = numarr_query_validator(lon)
-    lati = numarr_query_validator(lat)
-    if isinstance(loni, str) or isinstance(lati, str):
-        #if mode is not None and 'dataframe' in mode.lower():
-        #    return empty_data()
-        #else: 
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
-                            content=jsonable_encoder({"Error": "Check your input format should be comma-separated values"}))
 
-    #if 'ds' in kwargs:
-    #    ds = kwargs['ds']
-    #else:
+@app.get("/gebco")
+def zprofile(lon: Optional[str] = Query(
+                    None,
+                    description="comma-separated longitude values. One of lon/lat and jsonsrc should be specified as longitude/latitude input.",
+                    example="122.36,122.47"),
+             lat: Optional[str] = Query(
+                    None,
+                    description="comma-separated latitude values. One of lon/lat and jsonsrc should be specified as longitude/latitude input.",
+                    example="25.02,24.82"),
+             mode: Optional[str] = Query(
+                    None,
+                    description="comma-separated modes: row, point. Optional can be none"),
+             jsonsrc: Optional[str] = Query(
+                    None,
+                    description='Optional. A valid URL for JSON source or a JSON string that contains longitude and latitude keys with values in array.\n' +
+                                'Example: {"longitude":[122.36,122.47,122.56,122.66],"latitude":[25.02,24.82,24.72,24.62]}')):
+    try:
+        if jsonsrc:
+            # Validate it's a URL
+            try:
+                json_resp = requests.get(jsonsrc)
+                json_resp.raise_for_status()
+                json_obj = json_resp.json()
+            except:
+                try:
+                    json_obj = json.loads(jsonsrc)
+                except:
+                    raise ValueError("Input jsonsrc must be a valid URL or a JSON string.")
+
+            # Validate the JSON has 'longitude' and 'latitude' keys
+            # LonLat(**json_obj)
+            loni = np.array(json_obj['longitude'])
+            lati = np.array(json_obj['latitude'])
+        else:
+            if lon and lat:
+                loni = numarr_query_validator(lon)
+                lati = numarr_query_validator(lat)
+
+                if isinstance(loni, str) or isinstance(lati, str):
+                    return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
+                                        content=jsonable_encoder({"Error": "Check your input format should be comma-separated values"}))
+                # Validate longitude and latitude
+                # LonLat(longitude=longitude.tolist(), latitude=latitude.tolist())
+            else:
+                raise ValueError("Both 'lon' and 'lat' parameters must be provided, otherwise use 'jsonsrc' as input")
+
+    except (ValueError, json.JSONDecodeError) as e:
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
+                            content={"Error": str(e)})
+    except requests.HTTPError as e:
+        return JSONResponse(status_code=e.response.status_code,
+                            content={"Error": str(e)})
+
     global ds
     global arcsec
     global arc
@@ -98,7 +172,6 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
     global halfxidx
     global halfyidx
     global subsetFlag
-
     format = 'default'
     # i.e, output all gridded points along the line; otherwise 'point', output only end-points.
     zmode = 'line'
@@ -108,7 +181,7 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
         if 'row' in mode.lower():
             format = 'row'
         #if 'dataframe' in mode.lower():
-        #    format = 'dataframe'    
+        #    format = 'dataframe'
 
     if len(loni) != len(lati):
         ds.close()
@@ -138,7 +211,6 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
             out = jsonable_encoder({"longitude": np.array([loc1[0]]).tolist(),
                                     "latitude": np.array([loc1[1]]).tolist(),
                                     "z": xt1.tolist(), "distance": np.array([0]).tolist()})
-
     else:
         if zmode == 'point':
             lonk = loni

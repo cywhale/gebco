@@ -40,3 +40,4 @@
 
 ###### ver 0.2.3 Breaking move read_gebco01.py to gebco_app.py, try polygon mode in wireframe01 
     
+###### ver 0.2.4 Add jsonsrc can feed JSON url/string, and fix openapi.json in /swagger
