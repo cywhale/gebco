@@ -20,6 +20,9 @@ source "$HOME/python/py38/bin/activate"
 cd "$HOME/python/gebco"
 gunicorn gebco_app:app -w 4 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload
 
+# debug
+gunicorn gebco_app:app -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload --capture-output --log-level debug --access-logfile - --error-logfile -
+
 # pm2 start
 pm2 start ./conf/ecosystem.config.js
 

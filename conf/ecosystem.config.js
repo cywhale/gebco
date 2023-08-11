@@ -12,6 +12,7 @@ module.exports = {
     append_env_to_name: true,
     watch: false,
     max_memory_restart: '4G',
+    pre_stop:"ps -ef | grep -w 'gebco_app' | grep -v grep | awk '{print $2}' | xargs -r kill -9"
   }],
 };
 

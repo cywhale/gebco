@@ -111,7 +111,7 @@ def numarr_query_validator(qry):
             return ("Format Error")
 
 
-@app.get("/gebco")
+@app.get("/gebco", tags=["Bathymetry"], summary="Get GEBCO bathymetry as JSON")
 def zprofile(lon: Optional[str] = Query(
                     None,
                     description="comma-separated longitude values. One of lon/lat and jsonsrc should be specified as longitude/latitude input.",
