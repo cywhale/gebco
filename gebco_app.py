@@ -10,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
+from contextlib import asynccontextmanager
 from typing import Optional #, Union
 #from pydantic import BaseModel, ValidationError, HttpUrl, validator
 import requests #, httpx
@@ -17,7 +18,7 @@ import json
 # import orjson
 # from loggerConfig import logger
 # from models import zprofSchema
-from xmeridian import *
+from src.xmeridian import *
 
 import dask
 from multiprocessing.pool import Pool
@@ -31,7 +32,8 @@ def generate_custom_openapi():
         title="ODB API for GEBCO Bathymetry",
         version="1.0.0",
         description="Z-profile (and distances) between longitude/latitude points with 15-arcsec resolutions.\n" +
-                    "Data source: GEBCO Compilation Group (2022) GEBCO_2022 Grid (doi:10.5285/e0f0bb80-ab44-2739-e053-6c86abc0289c)",
+                    #"Data source: GEBCO Compilation Group (2022) GEBCO_2022 Grid (doi:10.5285/e0f0bb80-ab44-2739-e053-6c86abc0289c)",
+                    "Data source: GEBCO Compilation Group (2023) GEBCO 2023 Grid (doi:10.5285/f98b053b-0cbc-6c23-e053-6c86abc0af7b)",
         routes=app.routes,
     )
     openapi_schema["servers"] = [
@@ -42,7 +44,26 @@ def generate_custom_openapi():
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
-app = FastAPI(docs_url=None)
+
+# @app.on_event("startup")
+# async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    #if 'ds' in kwargs:
+    #    ds = kwargs['ds']
+    #else:
+    global ds
+    # logger.info
+    ds = xr.open_zarr(
+        #'data/GEBCO_2022_sub_ice_topo.zarr', chunks='auto', group='gebco',
+        'data/GEBCO_2023_sub_ice_topo.zarr', chunks='auto',
+        decode_cf=False, decode_times=False)
+    yield
+    ds.close()
+
+
+app = FastAPI(docs_url=None, lifespan=lifespan)
 
 @app.get("/gebco/openapi.json", include_in_schema=False)
 async def custom_openapi():
@@ -65,17 +86,6 @@ halfxidx = 180 * arc  # in netcdf, longitude length = 86400
 halfyidx = 90 * arc  # in netcdf, latitude length = 43200
 subsetFlag = True
 
-
-@app.on_event("startup")
-async def startup():
-    #if 'ds' in kwargs:
-    #    ds = kwargs['ds']
-    #else:
-    global ds
-    # logger.info
-    ds = xr.open_zarr(
-        'GEBCO_2022_sub_ice_topo.zarr', chunks='auto', group='gebco',
-        decode_cf=False, decode_times=False)
 
 # @app.on_event("shutdown")
 # def release_dataset():

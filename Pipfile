@@ -1,0 +1,21 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+dask = "==2023.11.0"
+fastapi = "==0.104.1"
+geopy = "==2.4.1"
+gunicorn = "==21.2.0"
+numpy = "==1.26.2"
+polars = "==0.19.17"
+requests = "==2.31.0"
+uvicorn = "==0.24.0.post1"
+xarray = "==2023.11.0"
+zarr = "==2.16.1"
+
+[dev-packages]
+
+[requires]
+python_version = "3.11"

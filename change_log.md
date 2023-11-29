@@ -43,3 +43,6 @@
 ###### ver 0.2.4 Add jsonsrc can feed JSON url/string, and fix openapi.json in /swagger
 
 ###### ver 0.2.5 Package upgrade/improve pm2 restart by pre_stop
+
+
+#### ver 0.3.0 Breaking upgrade to GEBCO(2023) now. Change to use pipenv for package version management 

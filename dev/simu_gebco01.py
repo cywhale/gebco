@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from typing import Union #, Optional
 # from loggerConfig import logger
 # from models import zprofSchema
-from xmeridian import *
+from src.xmeridian import *
 
 import dask
 # from multiprocessing.pool import Pool
@@ -39,7 +39,7 @@ subsetFlag = True
 global ds
 #logger.info
 ds = xr.open_zarr(
-        'GEBCO_2022_sub_ice_topo.zarr', chunks='auto', group='gebco',
+        'data/GEBCO_2023_sub_ice_topo.zarr', chunks='auto', group='gebco',
         decode_cf=False, decode_times=False)
 
 # @app.on_event("shutdown")
@@ -382,7 +382,7 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
     return JSONResponse(content=out)
 
 
-#print(zprofile(lon='123,123.15', lat='22.13,22', mode='dataframe'))
+print(zprofile(lon='123,123.15', lat='22.13,22', mode='dataframe'))
 #print(zprofile(lon='123,123.15', lat='22.13,22', mode='dataframe,zonly'))
 #out = zprofile(lon='123,123.15', lat='22.13', mode='dataframe')
 #print(out)
