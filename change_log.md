@@ -46,3 +46,5 @@
 
 
 #### ver 0.3.0 Breaking upgrade to GEBCO(2023) now. Change to use pipenv for package version management 
+
+###### ver 0.3.1 Change Zarr dataset chunk-size to 675*2700 imporve startup loading in GEBCO(2023)

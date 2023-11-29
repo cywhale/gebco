@@ -3,7 +3,7 @@ import numpy as np
 # import pandas as pd
 import polars as pl
 import math
-# import time
+import time
 # import orjson
 from geopy.distance import geodesic
 from fastapi import FastAPI, status  # , Depends
@@ -38,9 +38,26 @@ subsetFlag = True
     #else:
 global ds
 #logger.info
-ds = xr.open_zarr(
-        'data/GEBCO_2023_sub_ice_topo.zarr', chunks='auto', group='gebco',
+st = time.time()
+ds1 = xr.open_zarr(
+        'data/GEBCO_2022_sub_ice_topo.zarr', chunks='auto', group='gebco',
         decode_cf=False, decode_times=False)
+et = time.time()
+print('Startup loading GEBCO-2022 zarr time: ', et-st, 'sec')
+
+st = time.time()
+ds2 = xr.open_zarr(
+        'data/GEBCO_2023_sub_ice_topo60x60.zarr', chunks='auto',
+        decode_cf=False, decode_times=False)
+et = time.time()
+print('Startup loading GEBCO-2023 smaller_chunk (60x60) zarr time: ', et-st, 'sec')
+
+st = time.time()
+ds = xr.open_zarr(
+        'data/GEBCO_2023_sub_ice_topo.zarr', chunks='auto', #group='gebco',
+        decode_cf=False, decode_times=False)
+et = time.time()
+print('Startup loading GEBCO-2023 zarr time: ', et-st, 'sec')
 
 # @app.on_event("shutdown")
 # def release_dataset():
@@ -98,6 +115,8 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
     #    ds = kwargs['ds']
     #else:
     global ds
+    global ds1
+    global ds2
     #print(type(ds))
     global arcsec
     global arc
@@ -122,7 +141,7 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
             format = 'dataframe'    
 
     if len(loni) != len(lati):
-        ds.close()
+        ds.close()      
         if mode == 'dataframe':
             return empty_data()
         else:
@@ -336,9 +355,28 @@ def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
         mlat1 = mlat1 if mlat1 <= basey else basey-0.00001
         mlon0x = ds["lon"][mlonbase].item()
         mlat0x = ds["lat"][mlatbase].item()
+        
+        st = time.time()
         ds_s1 = ds.sel(lon=slice(mlon0x, mlon1), lat=slice(
             mlat0x, mlat1)) if subsetFlag else ds
         ds.close()
+        et = time.time()
+        print('Subsetting GEBCO-2023 zarr time: ', et-st, 'sec')
+
+        st = time.time()
+        ds1_s1 = ds1.sel(lon=slice(mlon0x, mlon1), lat=slice(
+            mlat0x, mlat1)) if subsetFlag else ds
+        ds1.close()
+        et = time.time()
+        print('Subsetting GEBCO-2022 zarr time: ', et-st, 'sec')
+
+        st = time.time()
+        ds2_s1 = ds2.sel(lon=slice(mlon0x, mlon1), lat=slice(
+            mlat0x, mlat1)) if subsetFlag else ds
+        ds2.close()
+        et = time.time()
+        print('Subsetting GEBCO-2023 smaller_chunk (60x60) zarr time: ', et-st, 'sec')
+
         xt1 = ds_s1['elevation'].values[tuple(idx1.T)]
         ds_s1.close()
         if format == 'row' or format == 'dataframe':
