@@ -2,7 +2,7 @@ import xarray as xr
 import numpy as np
 from fastapi import FastAPI, status, Query
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, ORJSONResponse
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
     config.ds.close()
 
 
-app = FastAPI(docs_url=None, lifespan=lifespan)
+app = FastAPI(docs_url=None, lifespan=lifespan, default_response_class=ORJSONResponse)
 
 
 @app.get("/gebco/openapi.json", include_in_schema=False)
@@ -171,8 +171,10 @@ def gebco(
                 if format == "row":
                     out = df1.to_dicts()
                 else:
-                    out = df1.to_pandas().to_dict()
-                return JSONResponse(content=out)
+                    # out = df1.to_pandas().to_dict() #produce {"longitude": {...}, "latitude": {...}, "value": {}}
+                    # But desired result: ` {"longitude": [...], "latitude": [...], "value": [....]}`.
+                    out = {column: df1[column].to_list() for column in df1.columns}
+                return ORJSONResponse(content=out)
 
             loni = np.array(json_obj["longitude"])
             lati = np.array(json_obj["latitude"])

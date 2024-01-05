@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Terrain Visualization</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <h2>3D Terrain Visualization</h2>
+    <textarea id="jsonInput" rows="4" cols="50"></textarea><br>
+    <button onclick="fetchAndPlot()">Fetch and Plot</button>
+    <div id="plot"></div>
+
+    <script>
+	    const plotlyMesh = (data) => {
+                    const trace = {
+                        x: [...data.longitude],
+                        y: [...data.latitude],
+                        z: [...data.z],
+                        type: 'mesh3d',
+                        opacity: 0.5,
+                        color: 'blue'
+                    };
+                    console.log("got trace:", trace)
+					//longitude.slice(data.z.length-11), data.latitude.slice(data.z.length-1), data.z.slice(data.z.length-1))
+                    const layout = {
+                        title: '3D Terrain',
+                        autosize: true,
+                        scene: {
+                            aspectratio: { x: 1, y: 1, z: 0.5 },
+                            camera: { eye: { x: 1.25, y: 1.25, z: 1.25 } }
+                        }
+                    };
+
+                    Plotly.newPlot(document.getElementById('plot'), [trace], layout);	
+		}
+		
+        async function fetchAndPlot() {
+            const jsonInput = document.getElementById('jsonInput').value;
+		    const jsonsrc = jsonInput.replace(" ", "").replace('\n', '').replace('\r', '')
+            const url = `https://api.odb.ntu.edu.tw/gebco?mode=zonly&jsonsrc=${encodeURIComponent(jsonsrc)}`;
+
+            try{
+                const res = await fetch(url)
+                if (!res.ok) {
+                    console.log("Fail to fetch this URL")
+                } else {
+                    const data = await res.json()
+					await plotlyMesh(data)
+                }
+            } catch (err) {
+                console.log(err)
+            }
+        }
+    </script>
+</body>
+</html>

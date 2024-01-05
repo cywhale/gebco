@@ -4,7 +4,7 @@ import math
 from geopy.distance import geodesic
 from fastapi import status
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, ORJSONResponse
 import src.config as config
 from src.xmeridian import crossBoundary
 
@@ -412,4 +412,4 @@ def zprofile(loni, lati, mode):
         out = df1.to_dicts()  # by polars
     # et = time.time()
     # print('4 Convert JSON by fastapi: ', et-st, 'sec')
-    return JSONResponse(content=out)
+    return ORJSONResponse(content=out)

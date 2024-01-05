@@ -13,8 +13,12 @@ requests = "==2.31.0"
 uvicorn = "==0.25.0"
 xarray = "==2023.12.0"
 zarr = "==2.16.1"
-dask = {extras = ["complete"], version = "==2023.12.1"}
+dask = "==2023.12.1"
 setuptools = "==69.0.3"
+polars-lts-cpu = "==0.20.3"
+pyarrow = "==14.0.2"
+pygeos = "==0.14"
+shapely = "==2.0.2"
 
 [dev-packages]
 

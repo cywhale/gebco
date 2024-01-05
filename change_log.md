@@ -49,5 +49,6 @@
 
 ###### ver 0.3.1 Change Zarr dataset chunk-size to 675*2700 imporve startup loading in GEBCO(2023)
 
-#### v0.3.2 Breaking: support GeoJSON to wireframe polygon mode/n1 still need resample, polygon cross xmeridian
+###### ver 0.3.2 Breaking: support GeoJSON to wireframe polygon mode/n1 still need resample, polygon cross xmeridian
 
+###### ver 0.3.3 small fix 'list' format not array of long/lat/z bug
