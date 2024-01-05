@@ -1,80 +1,12 @@
-import xarray as xr
 import numpy as np
-
-# import pandas as pd
 import polars as pl
 import math
-import time
-
-# import orjson
 from geopy.distance import geodesic
-from fastapi import status  # , Depends
+from fastapi import status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-
-# from typing import Union  # , Optional
-# from loggerConfig import logger
-# from models import zprofSchema
-from src.xmeridian import crossBoundary
 import src.config as config
-
-# import dask
-# from multiprocessing.pool import Pool
-# dask.config.set(pool=Pool(4))  # , scheduler='processes', num_workers=4)
-# dask.set_options(get=dask.get_sync)
-from pathlib import Path
-
-# @app.on_event("startup")
-# async def startup(**kwargs):
-# if 'ds' in kwargs:
-#    ds = kwargs['ds']
-# else:
-global ds
-# logger.info
-# st = time.time()
-# ds1 = xr.open_zarr(
-#    "data/GEBCO_2023_sub_ice_topo.zarr",
-#    chunks="auto",
-#    group="gebco",
-#    decode_cf=False,
-#    decode_times=False,
-# )
-# et = time.time()
-# print("Startup loading GEBCO-2023 zarr time: ", et - st, "sec")
-
-# st = time.time()
-# ds2 = xr.open_zarr(
-#    "data/GEBCO_2023_sub_ice_topo60x60.zarr",
-#    chunks="auto",
-#    decode_cf=False,
-#    decode_times=False,
-# )
-# et = time.time()
-# print("Startup loading GEBCO-2023 smaller_chunk (60x60) zarr time: ", et - st, "sec")
-
-# Get the directory of the current file (simu_api_app.py)
-current_dir = Path(__file__).resolve().parent
-
-# Construct the path to the data directory
-data_dir = current_dir.parent / "data" / "GEBCO_2023_sub_ice_topo.zarr"
-print("Data dir: ", data_dir)
-st = time.time()
-config.ds = xr.open_zarr(
-    data_dir,  # "data/GEBCO_2023_sub_ice_topo.zarr",
-    chunks="auto",  # group='gebco',
-    decode_cf=False,
-    decode_times=False,
-)
-et = time.time()
-print("Startup loading GEBCO-2023 zarr time: ", et - st, "sec")
-ds = config.ds
-arcsec = 15
-arc = int(3600 / arcsec)  # 15 arc-second
-basex = 180  # -180 - 180 <==> 0 - 360, half is 180
-basey = 90  # -90 - 90 <==> 0 - 180, half is 90
-# halfxidx = 180 * arc  # in netcdf, longitude length = 86400
-# halfyidx = 90 * arc  # in netcdf, latitude length = 43200
-subsetFlag = True
+from src.xmeridian import crossBoundary
 
 
 def gridded_arcsec(x, base=90, arc=3600 / 15):
@@ -91,19 +23,15 @@ def curDist(loc, dis=np.empty(shape=[0, 1], dtype=float)):
     )
 
 
-def numarr_query_validator(qry):
-    if "," in qry:
-        try:
-            out = np.array([float(x.strip()) for x in qry.split(",")])
-            return out
-        except ValueError:
-            return "Format Error"
-    else:
-        try:
-            out = np.array([float(qry.strip())])
-            return out
-        except ValueError:
-            return "Format Error"
+def zdata_bbox(bbox):
+    ds = config.ds
+    arc = config.arc
+    minx, miny, maxx, maxy = bbox
+    subset_data = ds.sel(
+        lon=slice(minx - 0.25 / arc, maxx + 1.5 / arc),
+        lat=slice(miny - 0.25 / arc, maxy + 1.5 / arc),
+    )
+    return subset_data
 
 
 def empty_data():
@@ -111,42 +39,22 @@ def empty_data():
     return pl.DataFrame(schema=_columns)
 
 
-# Old version that zprofile is basic route. Now extract zprofile as a function
-# def zprofile(lon: str, lat: str, mode: Union[str, None] = None):
-#    loni = numarr_query_validator(lon)
-#    lati = numarr_query_validator(lat)
-#    if isinstance(loni, str) or isinstance(lati, str):
-#        if mode is not None and "dataframe" in mode.lower():
-#            return empty_data()
-#        else:
-#            return JSONResponse(
-#                status_code=status.HTTP_400_BAD_REQUEST,
-#                content=jsonable_encoder(
-#                    {
-#                        "Error": "Check your input format should be comma-separated values"
-#                    }
-#                ),
-#            )
 def zprofile(loni, lati, mode):
-    # if 'ds' in kwargs:
-    #    ds = kwargs['ds']
-    # else:
-    global ds
-    # global ds1
-    # global ds2
-    # print(type(ds))
-    global arcsec
-    global arc
-    global basex
-    global basey
-    # global halfxidx
-    # global halfyidx
-    global subsetFlag
-
+    # global ds #move to config.py
+    # global arcsec #15
+    # global arc
+    # global basex
+    # global basey
+    # global subsetFlag
+    ds = config.ds
+    arc = config.arc  # int(3600 / arcsec)  # 15 arc-second
+    basex = config.basex  # 180  # -180 - 180 <==> 0 - 360, half is 180
+    basey = config.basey  # 90  # -90 - 90 <==> 0 - 180, half is 90
+    subsetFlag = True
     format = "default"
     # i.e, output all gridded points along the line; otherwise 'point', output only end-points.
+    zonly = False  # don't compute distance function so that can improve speed
     zmode = "line"
-    zonly = False
     if mode is not None:
         if "zonly" in mode.lower():
             zonly = True
@@ -161,7 +69,7 @@ def zprofile(loni, lati, mode):
         if mode == "dataframe":
             return empty_data()
         else:
-            ds.close()
+            # ds.close() # Now handle in lifespan
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content=jsonable_encoder(
@@ -444,7 +352,6 @@ def zprofile(loni, lati, mode):
                     dis1 = np.append(dis1, dist, axis=None)
                 preidx = brk + 1
         # end loop-brks
-        # np.savetxt("simu/test_loc.csv", loc1, delimiter=",", fmt='%f')
         # mlon0 = np.min(lonx) #may cause slice offset to mlonbase, an offset +-1
         mlon1 = np.max(lonk) + 1.5 / arc  # to make it larger
         mlon1 = mlon1 if mlon1 <= basex else basex - 0.00001
@@ -453,41 +360,15 @@ def zprofile(loni, lati, mode):
         mlat1 = mlat1 if mlat1 <= basey else basey - 0.00001
         mlon0x = ds["lon"][mlonbase].item()
         mlat0x = ds["lat"][mlatbase].item()
-
-        st = time.time()
         ds_s1 = (
             ds.sel(lon=slice(mlon0x, mlon1), lat=slice(mlat0x, mlat1))
             if subsetFlag
             else ds
         )
-        et = time.time()
-        print("Subsetting GEBCO-2023 zarr time: ", et - st, "sec")
-
-        # st = time.time()
-        # ds1_s1 = (
-        #    ds1.sel(lon=slice(mlon0x, mlon1), lat=slice(mlat0x, mlat1))
-        #    if subsetFlag
-        #    else ds
-        # )
-        # ds1.close()
-        # et = time.time()
-        # print("Subsetting GEBCO-2022 zarr time: ", et - st, "sec")
-
-        # st = time.time()
-        # ds2_s1 = (
-        #    ds2.sel(lon=slice(mlon0x, mlon1), lat=slice(mlat0x, mlat1))
-        #    if subsetFlag
-        #    else ds
-        # )
-        # ds2.close()
-        # et = time.time()
-        # print("Subsetting GEBCO-2023 smaller_chunk (60x60) zarr time: ", et - st, "sec")
-
         xt1 = ds_s1["elevation"].values[tuple(idx1.T)]
         ds_s1.close()
         if format == "row" or format == "dataframe":
             if not zonly:
-                # df1= pd.DataFrame({"longitude": loc1[:, 0].tolist(),
                 df1 = pl.DataFrame(
                     {
                         "longitude": loc1[:, 0],  # .tolist(),
@@ -495,14 +376,11 @@ def zprofile(loni, lati, mode):
                         "z": xt1,  # .tolist(),
                         "distance": dis1,
                     }
-                )  # .tolist()},
+                )
             else:
                 df1 = pl.DataFrame(
                     {"longitude": loc1[:, 0], "latitude": loc1[:, 1], "z": xt1}
                 )
-            # print("Test df1:", df1)
-            # columns=['longitude', 'latitude', 'z', 'distance']) #no need after polars v0.17.x
-
         else:
             if not zonly:
                 out = jsonable_encoder(
@@ -521,9 +399,6 @@ def zprofile(loni, lati, mode):
                         "z": xt1.tolist(),
                     }
                 )
-        # return({"data": xt1})
-        # np.savetxt("simu/test_zseg.csv", pt1, delimiter=",", fmt='%f')
-
     # st = time.time()
     # jt1 = orjson.dumps(xt1.tolist(), option=orjson.OPT_NAIVE_UTC |
     #                   orjson.OPT_SERIALIZE_NUMPY)
@@ -531,34 +406,10 @@ def zprofile(loni, lati, mode):
     if format == "dataframe":
         return df1
 
-    ds.close()  # ds not close if internally return as dataframe
+    # ds.close()  # ds not close if internally return as dataframe #Move to lifespan
     if format == "row":
         # out= df1.to_dict(orient='records') #by using pandas
         out = df1.to_dicts()  # by polars
     # et = time.time()
     # print('4 Convert JSON by fastapi: ', et-st, 'sec')
     return JSONResponse(content=out)
-
-
-def zdata_bbox(bbox):
-    global ds
-    global arc
-    minx, miny, maxx, maxy = bbox
-    subset_data = ds.sel(
-        lon=slice(minx - 0.25 / arc, maxx + 1.5 / arc),
-        lat=slice(miny - 0.25 / arc, maxy + 1.5 / arc),
-    )
-    return subset_data
-
-
-print(
-    zprofile(
-        loni=numarr_query_validator("123,123.15"),
-        lati=numarr_query_validator("22.13,22"),
-        mode="dataframe",
-    )
-)
-# print(zprofile(lon="123,123.15", lat="22.13,22", mode="dataframe"))
-# print(zprofile(lon='123,123.15', lat='22.13,22', mode='dataframe,zonly'))
-# out = zprofile(lon='123,123.15', lat='22.13', mode='dataframe')
-# print(out)
