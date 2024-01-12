@@ -37,7 +37,7 @@
         async function fetchAndPlot() {
             const jsonInput = document.getElementById('jsonInput').value;
 		    const jsonsrc = jsonInput.replace(" ", "").replace('\n', '').replace('\r', '')
-            const url = `https://api.odb.ntu.edu.tw/gebco?mode=zonly&jsonsrc=${encodeURIComponent(jsonsrc)}`;
+            const url = `https://api.odb.ntu.edu.tw/gebco?mode=zonly,lon360&jsonsrc=${encodeURIComponent(jsonsrc)}`;
 
             try{
                 const res = await fetch(url)

@@ -66,40 +66,42 @@ def process_linestring(line, line_id, mode):
     return coords_zprof(coordx, line_id, mode)
 
 
-def process_polygon_part(polygon, line_id, mode, crosses_180=False):
-    isRight = is_right_polygon(polygon) if crosses_180 else False
+def process_polygon_part(polygon, line_id, mode, crosses_180=False, isRight=False):
     if crosses_180:
         trans_coords = transform_back_to_180(polygon.exterior.coords, isRight)
     else:
         trans_coords = transform_back_to_180(pygeos.get_coordinates(polygon), isRight)
     trans_poly = pygeos.from_shapely(Polygon(trans_coords))
-    # print("Debug trans_back_to_180: ", trans_coords, trans_poly)
     minx, miny, maxx, maxy = pygeos.bounds(trans_poly)
     subset_data = zdata_bbox((minx, miny, maxx, maxy), crosses_180, isRight)
 
     # Create a mask for data points within the polygon
     lons, lats = np.meshgrid(subset_data.lon, subset_data.lat)
     points = pygeos.points(lons.ravel(), lats.ravel())
-    mask = pygeos.contains(trans_poly, points)  # .within(points, polygon)
-    # Reshape the mask to match the dimensions of the elevation data
+    mask = pygeos.contains(trans_poly, points)
     mask_reshaped = mask.reshape(lats.shape)
 
     # Apply mask and create DataFrame
     elevation_data = subset_data.elevation.values[mask_reshaped]
     masked_lons, masked_lats = lons[mask_reshaped], lats[mask_reshaped]
-    # if crosses_180, longitude is like -179.5....-179.999(descending), 179.999,..,179.5(desending)
+
+    # Transform longitude to 0-360 range if 'lon360' is in mode
+    if crosses_180 and "lon360" in mode:
+        masked_lons = np.where(masked_lons < 0, masked_lons + 360, masked_lons)
+
+    # Adjust sorting order
+    sort_descending = [crosses_180 and "lon360" not in mode, True]
+
     df = pl.DataFrame(
         {
             "longitude": masked_lons.ravel(),
             "latitude": masked_lats.ravel(),
             "z": elevation_data.ravel(),
         }
-    ).sort("longitude", "latitude", descending=[crosses_180, True])
+    ).sort(["longitude", "latitude"], descending=sort_descending)
 
     if "zonly" in mode:
-        append_cols = [
-            pl.lit(line_id).cast(pl.Int16).alias("lineid"),
-        ]
+        append_cols = [pl.lit(line_id).cast(pl.Int16).alias("lineid")]
     else:
         append_cols = [
             pl.lit(None).cast(pl.Float64).alias("distance"),
@@ -118,15 +120,33 @@ def process_polygon(polygon, line_id, mode):
 
     if crosses_180:
         split_poly = split_polygon_at_180(polygon)
-        dataframes = []
+        # dataframes=[]
+        left_df, right_df = None, None
 
         for part in split_poly.geoms:
             if part.is_empty:
                 continue
-            df = process_polygon_part(part, line_id, mode, crosses_180)
-            dataframes.append(df)
-
-        df = pl.concat(dataframes)
+            isRight = is_right_polygon(part) if crosses_180 else False
+            df = process_polygon_part(part, line_id, mode, crosses_180, isRight)
+            # dataframes.append(df)
+            if isRight:
+                right_df = df
+            else:
+                left_df = df
+        # df = pl.concat(dataframes)
+        # Determine the order of concatenation based on mode
+        if "lon360" in mode:
+            df = (
+                pl.concat([right_df, left_df])
+                if right_df is not None and left_df is not None
+                else (right_df or left_df)
+            )
+        else:
+            df = (
+                pl.concat([left_df, right_df])
+                if right_df is not None and left_df is not None
+                else (right_df or left_df)
+            )
     else:
         df = process_polygon_part(polygon, line_id, mode, False)
 

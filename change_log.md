@@ -54,3 +54,5 @@
 ###### ver 0.3.3 small fix 'list' format not array of long/lat/z bug
 
 ###### ver 0.3.4 support Polygon cross 180-degree line
+
+###### ver 0.3.5 support longitude (0-360) output only when cross 180-degree line
