@@ -23,12 +23,25 @@ def curDist(loc, dis=np.empty(shape=[0, 1], dtype=float)):
     )
 
 
-def zdata_bbox(bbox):
-    ds = config.ds
+def zdata_bbox(bbox, crosses_180=False, isRight=False):
+    ds = config.ds  # config.ds is the global variable of zarr dataset
     arc = config.arc
     minx, miny, maxx, maxy = bbox
+    # if crosses_180, left polygon's longitude is like maxx = -179.5, minx = -179.999
+    # if crosses_180, right polygon's longitude is like maxx= 179.99, minx = 179.5
+    lftx = (
+        minx - 0.25 / arc
+        if not crosses_180 or (crosses_180 and isRight)
+        else max(minx - 0.25 / arc, -180 + 0.01 / arc)
+    )
+    rgtx = (
+        min(maxx + 1.5 / arc, 180 - 0.01 / arc)
+        if not crosses_180 or (crosses_180 and isRight)
+        else maxx + 1.5 / arc
+    )
+    # print("Debug left, right to slice: ", lftx, rgtx, " and bbox: ", bbox, " and condition: ", crosses_180, isRight)
     subset_data = ds.sel(
-        lon=slice(minx - 0.25 / arc, maxx + 1.5 / arc),
+        lon=slice(lftx, rgtx),
         lat=slice(miny - 0.25 / arc, maxy + 1.5 / arc),
     )
     return subset_data

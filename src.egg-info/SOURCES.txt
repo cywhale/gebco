@@ -21,6 +21,7 @@ simu/Hidy_zseg_123E98_23N33_123_21N33.csv
 simu/gebco_xy_123E98_23N33_123_21N33.csv
 simu/gebco_z_123E98_23N33_123_21N33.csv
 simu/gebco_zseg_123E98_23N33_123_21N33.csv
+simu/simu_mesh3D.html
 src/__init__.py
 src/config.py
 src/polyhandler.py

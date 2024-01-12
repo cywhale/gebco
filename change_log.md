@@ -52,3 +52,5 @@
 ###### ver 0.3.2 Breaking: support GeoJSON to wireframe polygon mode/n1 still need resample, polygon cross xmeridian
 
 ###### ver 0.3.3 small fix 'list' format not array of long/lat/z bug
+
+###### ver 0.3.4 support Polygon cross 180-degree line
