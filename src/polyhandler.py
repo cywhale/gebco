@@ -155,7 +155,7 @@ def process_polygon(polygon, line_id, mode, poly_sample):
                 else (right_df or left_df)
             )
     else:
-        df = process_polygon_part(polygon, line_id, mode, False, poly_sample)
+        df = process_polygon_part(polygon, line_id, mode, False, False, poly_sample)
 
     return df
 
@@ -242,6 +242,8 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
             geom_type,
             " with mode: ",
             mode,
+            " with sample: ",
+            poly_sample,
         )
         # interval = 15 / 3600  # 15 arc-seconds in degrees
 
