@@ -134,6 +134,10 @@ def gebco(
     mode: Optional[str] = Query(
         None, description="comma-separated modes: row, point. Optional can be none"
     ),
+    sample: Optional[int] = Query(
+        5,
+        description="Re-sampling polygon every N points(default 5, only work for polygon, and always 1 for line and point)",
+    ),
     jsonsrc: Optional[str] = Query(
         None,
         description="Optional. A valid URL for JSON source or a JSON string that contains longitude and latitude keys with values in array.\n"
@@ -141,6 +145,15 @@ def gebco(
     ),
 ):
     polyMode = False
+    if sample is None or sample < 1:
+        # sample = 1
+        poly_sample = 5
+    # elif mode is not None and "poly_sample_only" in mode:
+    #    poly_sample = sample  # only restrict polygon sample
+    #    sample = 1  # but not restrict other (line, potin)
+    else:
+        poly_sample = sample
+
     try:
         if jsonsrc:
             # Validate it's a URL
@@ -158,7 +171,9 @@ def gebco(
 
             polyMode = geojson_validator(json_obj)
             if polyMode:
-                df1, _ = polyhandler(json_obj, 0, mode)
+                df1, _ = polyhandler(
+                    json_obj, 0, mode, 1, poly_sample
+                )  # sample is always 1 if not polygon
                 format = "default"
                 if mode is not None and "row" in mode.lower():
                     format = "row"
@@ -208,4 +223,4 @@ def gebco(
             status_code=e.response.status_code, content={"Error": str(e)}
         )
 
-    return zprofile(loni, lati, mode)
+    return zprofile(loni, lati, mode, 1)  # sample

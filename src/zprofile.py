@@ -23,7 +23,7 @@ def curDist(loc, dis=np.empty(shape=[0, 1], dtype=float)):
     )
 
 
-def zdata_bbox(bbox, crosses_180=False, isRight=False):
+def zdata_bbox(bbox, crosses_180=False, isRight=False, sample=5):
     ds = config.ds  # config.ds is the global variable of zarr dataset
     arc = config.arc
     minx, miny, maxx, maxy = bbox
@@ -41,8 +41,8 @@ def zdata_bbox(bbox, crosses_180=False, isRight=False):
     )
     # print("Debug left, right to slice: ", lftx, rgtx, " and bbox: ", bbox, " and condition: ", crosses_180, isRight)
     subset_data = ds.sel(
-        lon=slice(lftx, rgtx),
-        lat=slice(miny - 0.25 / arc, maxy + 1.5 / arc),
+        lon=slice(lftx, rgtx, sample),
+        lat=slice(miny - 0.25 / arc, maxy + 1.5 / arc, sample),
     )
     return subset_data
 
@@ -52,7 +52,7 @@ def empty_data():
     return pl.DataFrame(schema=_columns)
 
 
-def zprofile(loni, lati, mode):
+def zprofile(loni, lati, mode, sample=1):
     # global ds #move to config.py
     # global arcsec #15
     # global arc
@@ -374,7 +374,7 @@ def zprofile(loni, lati, mode):
         mlon0x = ds["lon"][mlonbase].item()
         mlat0x = ds["lat"][mlatbase].item()
         ds_s1 = (
-            ds.sel(lon=slice(mlon0x, mlon1), lat=slice(mlat0x, mlat1))
+            ds.sel(lon=slice(mlon0x, mlon1, sample), lat=slice(mlat0x, mlat1, sample))
             if subsetFlag
             else ds
         )

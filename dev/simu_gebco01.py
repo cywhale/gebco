@@ -127,7 +127,7 @@ def empty_data():
 #                    }
 #                ),
 #            )
-def zprofile(loni, lati, mode):
+def zprofile(loni, lati, mode, sample=1):
     # if 'ds' in kwargs:
     #    ds = kwargs['ds']
     # else:
@@ -456,7 +456,7 @@ def zprofile(loni, lati, mode):
 
         st = time.time()
         ds_s1 = (
-            ds.sel(lon=slice(mlon0x, mlon1), lat=slice(mlat0x, mlat1))
+            ds.sel(lon=slice(mlon0x, mlon1, sample), lat=slice(mlat0x, mlat1, sample))
             if subsetFlag
             else ds
         )
@@ -540,6 +540,8 @@ def zprofile(loni, lati, mode):
     return JSONResponse(content=out)
 
 
+"""
+# Move to zprofile.py
 def zdata_bbox(bbox):
     global ds
     global arc
@@ -549,7 +551,7 @@ def zdata_bbox(bbox):
         lat=slice(miny - 0.25 / arc, maxy + 1.5 / arc),
     )
     return subset_data
-
+"""
 
 print(
     zprofile(
