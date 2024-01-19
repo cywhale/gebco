@@ -9,6 +9,9 @@
 <body>
     <h2>3D Terrain Visualization</h2>
     <textarea id="jsonInput" rows="4" cols="50"></textarea><br>
+    <label for='resampleInput'>Resample polygon: 
+    <input type="number" id="resampleInput" name="resampleInput" value="5" min="1" max="10" step="1" />
+    </label>
     <button onclick="fetchAndPlot()">Fetch and Plot</button>
     <div id="plot"></div>
 
@@ -36,8 +39,12 @@
 		
         async function fetchAndPlot() {
             const jsonInput = document.getElementById('jsonInput').value;
-		    const jsonsrc = jsonInput.replace(" ", "").replace('\n', '').replace('\r', '')
-            const url = `https://api.odb.ntu.edu.tw/gebco?mode=zonly,lon360&jsonsrc=${encodeURIComponent(jsonsrc)}`;
+            const jsonsrc = jsonInput.replace(" ", "").replace('\n', '').replace('\r', '')
+            const sampleVal = parseInt(document.getElementById('resampleInput').value);
+            let resample = 5
+            if (!isNaN(sampleVal)) { resample = sampleVal }
+
+            const url = `https://api.odb.ntu.edu.tw/gebco?mode=zonly,lon360&sample=${resample}&jsonsrc=${encodeURIComponent(jsonsrc)}`;
 
             try{
                 const res = await fetch(url)

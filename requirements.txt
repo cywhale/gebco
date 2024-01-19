@@ -3,13 +3,13 @@ fastapi==0.109.0
 geopy==2.4.1
 gunicorn==21.2.0
 numpy==1.26.3
-orjson==3.9.10
-polars==0.20.4
+orjson==3.9.12
+polars==0.20.5
 pyarrow==14.0.2
 pygeos==0.14
 Requests==2.31.0
 setuptools==69.0.3
 shapely==2.0.2
 uvicorn==0.25.0
-xarray==2023.12.0
+xarray==2024.1.0
 zarr==2.16.1

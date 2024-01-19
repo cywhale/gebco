@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>3D Terrain Visualization with Three.js</title>
-	<!--script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6.0.4/dist/d3-delaunay.min.js"></script-->
-	<script src="https://cdn.jsdelivr.net/npm/earcut@2.2.2/dist/earcut.min.js"></script>
+    <!--script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6.0.4/dist/d3-delaunay.min.js"></script-->
+    <!--script src="https://cdn.jsdelivr.net/npm/earcut@2.2.2/dist/earcut.min.js"></script-->
     <script type="importmap">
       {
       "imports": {
@@ -17,62 +17,175 @@
     <style>
         body { margin: 0; }
         canvas { display: block; }
+        .info { position: absolute; top: 40%; left: 10px; color: white; }
+    </style>
+</head>
+<body>
     </style>
 </head>
 <body>
     <h2>3D Terrain Visualization</h2>
     <textarea id="jsonInput" rows="4" cols="50"></textarea><br>
+    <label for='resampleInput'>Resample polygon:
+      <input type="number" id="resampleInput" name="resampleInput" value="5" min="1" max="10" step="1" />
+    </label>
     <button id="fetchPlotButton">Fetch and Plot</button>
+    <div id="cameraInfo" class="info">
+        <div id="cameraRotation">Rotation: -</div>
+        <!--div id="orientationInfo">Orientation to North: -</div-->
+        <!--div id="viewAngle">View angle: -</div-->
+    </div>
 
     <script type="module">
-	    //https://threejs.org/docs/#manual/en/introduction/Installation 
+        // https://threejs.org/docs/#manual/en/introduction/Installation 
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        var scene, camera, renderer, controls;
+        //import { Delaunay } from 'https://cdn.skypack.dev/d3-delaunay@6';
+        //https://github.com/mapbox/delaunator
+        //import Delaunator from 'https://cdn.skypack.dev/delaunator@5.0.0'
+        //https://github.com/Fil/d3-geo-voronoi
+        import {geoDelaunay} from "https://cdn.skypack.dev/d3-geo-voronoi@2"
+        var scene, camera, renderer, controls, axesCamera, axesScene, axesHelper, mesh;
+
+        var mock_data = {
+          latitude: [
+            3.0, 2.1, 0.0, -2.1,
+            3.0, 2.1, 0.0, -2.1,
+            3.0, 2.1, 0.0, -2.1,
+            3.0, 2.1, 0.0, -2.1, 
+          ],
+          longitude: [
+            -5.1, -5.1, -5.1, -5.1,
+            -3.0, -3.0, -3.0, -3.0,
+             1.1, 1.1, 1.1, 1.1,
+             2.0, 2.0, 2.0, 2.0
+          ],
+          z: [
+            10, 3, 10, -5, 
+            14, 35, 14, 6,
+            5, 12, 10, 3,
+            8, 20, 30, 8
+          ]
+        };
+
+  var mock_data1 = {
+    longitude: [120.1479, 120.1479, 120.1479, 121.1687, 121.1687, 121.1687,
+                121.4896, 121.4896, 121.4896, 121.8104, 121.8104, 121.8104,
+                122.4312, 122.4312, 122.4312, //121.2521, 121.2521, 121.2521,
+                //122.8729, 122.8729, 122.8729, //123.2937, 123.2937, 123.2937,
+                //123.6146, 123.6146, 123.6146, //121.3354, 121.3354, 121.3354,
+                124.3562, 124.3562, 124.3562],
+    latitude: [24.4813, 23.1479, 22.5146, 24.4813, 23.1479, 22.5146,
+               //24.4813, 23.1479, 22.5146, //24.4813, 23.1479, 22.5146,
+               24.4813, 23.1479, 22.5146, //23.4813, 23.1479, 22.8146,
+               24.4813, 23.1479, 22.5146, //23.4813, 23.1479, 22.8146,
+               24.4813, 23.1479, 22.5146, //23.4813, 23.1479, 22.8146,
+               24.4813, 23.1479, 22.5146],
+    z: [23, 97, 20, 31, 80, 15, 18, //-3, -15, -11,
+        37, 118, 33, 22, 50, //5, //14, 112, 46, //10,
+        12, 87, 18, //10, //17, -2, 0, //-13, 7, -11,
+        7, 75, 20]
+  } 
+  
+  var fetchMock = false;
+  var resample = 16;
+  var randZ = false;
+  var scaleZ = true;
+  var mock_data2={longitude:[], latitude:[], z:[]}
+
+  if (fetchMock) {
+    import('https://cdn.jsdelivr.net/npm/csv-parser@3.0.0/+esm')
+      .then((csvParserModule) => {
+        const csvParser = csvParserModule.default;
+
+        async function fetchMockData() {
+          try {
+            const response = await fetch('https://raw.githubusercontent.com/cywhale/gebco/main/simu/test_mock_in_threejs.csv');
+            const data = await response.text();
+            const random = (min, max) => Math.floor(Math.random() * (max - min)) + min; 
+            // Parse CSV data
+        
+            data
+              .split('\n')
+              .map(line => line.split(','))
+              .forEach(([longitude, latitude, z], idx) => {
+                  let lon = parseFloat(longitude)
+                  if (!isNaN(lon) && (idx - 1) % resample == 0) { //first row is header
+                    mock_data2.longitude.push(lon)
+                    mock_data2.latitude.push(parseFloat(latitude))
+                    mock_data2.z.push(randZ? random(0, 40) - 20: (scaleZ? 0.01 * parseFloat(z): parseFloat(z)))
+                  }
+              })
+
+            //dataReady = true;
+            console.log("Get mock data: ", mock_data2.longitude.map(e=>e.toFixed(4)), 
+                                           mock_data2.latitude.map(e=>e.toFixed(4)), 
+                                           mock_data2.z)
+            createTerrain(mock_data2)
+
+          } catch (error) {
+            console.error('Error fetching or parsing CSV:', error);
+          }
+        }
+
+        fetchMockData();
+      })
+      .catch((error) => {
+        console.error('Error loading CSV parser module:', error);
+      });
+  }
 
         function initThreeJS() {
+            // Set up the scene, camera, and renderer as usual
             scene = new THREE.Scene();
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer();
+
             camera.position.set(1.25, 1.25, 1.25);
             // Ensure the camera is pointing at the center of your geometry
-
-            // Adjust camera settings
+            /* Adjust camera settings
             camera.near = 0.1;
             camera.far = 10000;
-            camera.updateProjectionMatrix();
+            camera.updateProjectionMatrix(); */
+	    // Set a clear color for debugging
+	    // renderer.setClearColor(0xaaaaaa, 1);
 
-            renderer = new THREE.WebGLRenderer();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-			// Set a clear color for debugging
-			renderer.setClearColor(0xaaaaaa, 1);
+            // Add some lighting
+            const ambientLight = new THREE.AmbientLight(0x404040); //(0xffffff, 1.0)
+            scene.add(ambientLight);
 
-			// Set ambient light for debugging
-			var ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
-			scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
 			
+            // Create an AxesHelper and add it to your scene
+            axesHelper = new THREE.AxesHelper(5);
+
+            // Create a second camera and scene for rendering the axes helper
+            axesCamera = new THREE.PerspectiveCamera(75, 1, 0.1, 100);
+            axesCamera.up = camera.up; // Ensure they have the same up vector
+            axesScene = new THREE.Scene();
+            axesScene.add(axesHelper);
+            axesCamera.position.set(2, 2, 2); // Position it so it looks at the origin
+            axesCamera.lookAt(axesScene.position);
+
+            renderer.setSize(window.innerWidth, window.innerHeight);
             document.body.appendChild(renderer.domElement);
 
+            // Create OrbitControls
             controls = new OrbitControls(camera, renderer.domElement);
+            controls.target.set(0, 0, 0);
+            controls.update();
         }
-/*
-        function fetchAndPlot() {
-            const jsonInput = document.getElementById('jsonInput').value;
-		    const jsonsrc = jsonInput.replace(" ", "").replace('\n', '').replace('\r', '')
-            const url = `https://api.odb.ntu.edu.tw/gebco?mode=zonly&jsonsrc=${encodeURIComponent(jsonsrc)}`;
 
-            fetch(url)
-                .then(response => response.json())
-                .then(data => {
-                    createTerrain(data);
-                    animate();
-                })
-                .catch(error => console.error('Error:', error));
-        }
-*/		
         async function fetchAndPlot() {
             const jsonInput = document.getElementById('jsonInput').value;
-		    const jsonsrc = jsonInput.replace(" ", "").replace('\n', '').replace('\r', '')
-            const url = `https://api.odb.ntu.edu.tw/gebco?mode=zonly&jsonsrc=${encodeURIComponent(jsonsrc)}`;
+	    const jsonsrc = jsonInput.replace(" ", "").replace('\n', '').replace('\r', '')
+            const sampleVal = parseInt(document.getElementById('resampleInput').value);
+            let resample = 5
+            if (!isNaN(sampleVal)) { resample = sampleVal }
+
+            const url = `https://api.odb.ntu.edu.tw/gebco?mode=zonly,lon360&sample=${resample}&jsonsrc=${encodeURIComponent(jsonsrc)}`;
 
             try{
                 const res = await fetch(url)
@@ -86,135 +199,151 @@
                 console.log(err)
             }
         }
-/*
-function createGeometry(data) {
-  const vertices = [];
-  const faces = [];
-  const lonValues = [...new Set(data.longitude)]; // unique longitudes
-  const latValues = [...new Set(data.latitude)];  // unique latitudes
 
-  // Assuming that data is sorted first by latitude, then by longitude
-  for (let i = 0; i < latValues.length; i++) {
-    for (let j = 0; j < lonValues.length; j++) {
-      const index = i * lonValues.length + j;
-      if (data.longitude[index] === undefined || data.latitude[index] === undefined) continue;
-      vertices.push(new THREE.Vector3(data.longitude[index], data.latitude[index], data.z[index]));
-
-      // Create two triangles for each quad in the grid
-      if (i < latValues.length - 1 && j < lonValues.length - 1) {
-        const a = index;
-        const b = index + lonValues.length;
-        const c = index + 1;
-        const d = index + lonValues.length + 1;
-
-        // Triangle 1: a, b, c
-        // faces.push(new THREE.Face3(a, b, c));
-
-        // Triangle 2: b, d, c
-        // faces.push(new THREE.Face3(b, d, c));
-		faces.push(a, b, c); // First triangle
-        faces.push(b, d, c); // Second triangle
-      }
-    }
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  const verticesAttribute = new THREE.BufferAttribute(new Float32Array(vertices), 3);
-  geometry.setAttribute('position', verticesAttribute);
-  geometry.setIndex(faces);
-  
-  // Automatically compute normals
-  geometry.computeVertexNormals();
-
-  return geometry;
-}
-*/
-function createGeometry(data) {
-  // Flatten the input data for earcut
-  const vertices = [];
-  for (let i = 0; i < data.longitude.length; i++) {
-    vertices.push(data.longitude[i], data.latitude[i]);
-  }
-
-  // Triangulate the points within the polygon using earcut
-  const triangles = earcut(vertices);
-  console.log("Triangles: ", triangles)
-  // Create vertices for BufferGeometry
-  const positions = [];
-  for (let i = 0; i < data.longitude.length; i++) {
-    positions.push(data.longitude[i], data.latitude[i], data.z[i]);
-  }
-
-  // Create BufferGeometry
-  const geometry = new THREE.BufferGeometry();
-  const verticesAttribute = new THREE.BufferAttribute(new Float32Array(positions), 3);
-  geometry.setAttribute('position', verticesAttribute);
-  geometry.setIndex(triangles);
-
-  // Automatically compute normals
-  geometry.computeVertexNormals();
-
-  return geometry;
-}
-
-		
-        function createTerrain(data) {
-            /*const delaunay = d3.Delaunay.from(
-                data.longitude.map((lon, i) => [lon, data.latitude[i]])
-            );
-            const vertices = [];
-            for (let i = 0; i < delaunay.points.length; i += 2) {
-                vertices.push(
-                    delaunay.points[i], // x
-                    delaunay.points[i + 1], // y
-                    data.z[i / 2] // z
-                );
-            }*/
-//Take a look: https://github.com/turban/webgl-terrain/tree/master/wireframe
-// https://github.com/turban/webgl-terrain/blob/master/wireframe/besseggen.html
-// https://htmlpreview.github.io/?https://github.com/turban/webgl-terrain/blob/master/wireframe/besseggen.html	
-// blog: https://blog.mastermaps.com/2013/10/terrain-building-with-threejs.html
-		
-			/* https://stackoverflow.com/questions/74358515/how-to-draw-polygon-in-three-js-using-vertices
-			let polyShape = new THREE.Shape(data.longitude.map((lon, i) => new THREE.Vector2(lon, data.latitude[i])))
-            const polyGeometry = new THREE.ShapeGeometry(polyShape);
-            polyGeometry.setAttribute("position", new THREE.Float32BufferAttribute(data.longitude.map((lon, i) => [lon, data.latitude[i], data.z[i]]).flat(), 3))
-            let polygon = new THREE.Mesh(polyGeometry, new THREE.MeshBasicMaterial({ color: 0x0000ff, wireframe: true })) //({ color: "ColorYouWant, side: THREE.DoubleSide}))
-            scene.add(polygon);
-			camera.lookAt(polygon.position); */
-            //console.log("Debug vertices: ", vertices, delaunay.triangles)
-            /*const geometry = new THREE.BufferGeometry();
-            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-            geometry.setIndex(Array.from(delaunay.triangles));
-
-            geometry.computeVertexNormals();
-			//console.log("Debug geometry: ", geometry)
-
-            var material = new THREE.MeshBasicMaterial({ color: 0x0000ff, wireframe: true });
-            var mesh = new THREE.Mesh(geometry, material);
-            scene.add(mesh);*/
-    const geometry = createGeometry(data);
-    const material = new THREE.MeshBasicMaterial({ color: 0x0000ff, wireframe: true });
-    const mesh = new THREE.Mesh(geometry, material);
-    scene.add(mesh);
-
-    // Adjust camera to look at the center of the mesh
-    //const center = new THREE.Vector3();
-    //geometry.computeBoundingBox();
-    //geometry.boundingBox.getCenter(center);
-	//console.log("Center: ", center)
-    //camera.lookAt(center);
-			animate();
+        function resizeRendererToDisplaySize() {
+            const canvas = renderer.domElement;
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+            const needResize = canvas.width !== width || canvas.height !== height;
+            if (needResize) {
+                renderer.setSize(width, height, false);
+            }
+            return needResize;
         }
 
-        function animate() {
-            requestAnimationFrame(animate);
+        var renderRequested = false;
+
+        function render() {
+            renderRequested = undefined;
+            // Clear the depth buffer again before rendering the axes scene
+            // renderer.clearDepth();
+            //axesHelper.quaternion.copy(mesh.quaternion);
+            axesCamera.position.copy(camera.position);
+            axesCamera.position.sub(controls.target); // offset by the controls target
+            axesCamera.position.setLength(10); // fixed distance from the origin
+            axesCamera.lookAt(axesScene.position);
+            renderer.autoClear = true;
+
+            if (resizeRendererToDisplaySize()) {
+              const canvas = renderer.domElement;
+              camera.aspect = canvas.clientWidth / canvas.clientHeight;
+              camera.updateProjectionMatrix();
+            }
+            renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
             renderer.render(scene, camera);
-            controls.update();
+
+            // Set up the small viewport for the axes helper          
+            const size = 200; // Size of the viewport for the axes helper
+            renderer.autoClear = false;
+            renderer.setViewport(0, window.innerHeight - size, size, size); // Position it at the top-left corner
+            renderer.render(axesScene, axesCamera);
         }
 
-        initThreeJS();
-		document.getElementById('fetchPlotButton').addEventListener('click', fetchAndPlot);
+        function requestRenderIfNotRequested() {
+            if (!renderRequested) {
+              renderRequested = true;
+              requestAnimationFrame(render);
+            }
+        }
+/*
+        function getOrientationToNorth(camera) {
+            // The camera's look direction in world space is along its negative z-axis
+            var lookDirection = new THREE.Vector3(0, 0, -1);
+            lookDirection.applyQuaternion(camera.quaternion);
+
+            // Assuming North is along the world's y-axis
+            var northDirection = new THREE.Vector3(0, 1, 0);
+
+            // Project look direction onto the xz-plane by zeroing out the y-component
+            lookDirection.y = 0;
+
+            // Normalize the projected look direction
+            lookDirection.normalize();
+
+            // Calculate the angle between the look direction and North
+            var angleToNorth = lookDirection.angleTo(northDirection);
+            angleToNorth = THREE.MathUtils.radToDeg(angleToNorth);
+
+            // If look direction is west of North, correct the angle
+            if(lookDirection.x > 0) angleToNorth = 360 - angleToNorth;
+            return angleToNorth;
+        }
+*/
+        function updateCameraInfo() {
+            //console.log("camera info: ", camera.position, camera.rotation, camera.fov)
+            //document.getElementById('cameraPosition').textContent = `Position: ${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)}`;
+            document.getElementById('cameraRotation').textContent = `Rotation: ${camera.rotation.x.toFixed(2)}, ${camera.rotation.y.toFixed(2)}, ${camera.rotation.z.toFixed(2)}`;
+            //let angleToNorth = getOrientationToNorth(camera);
+            //document.getElementById('orientationInfo').textContent = `Orientation to North: ${angleToNorth.toFixed(2)}°`;
+            //document.getElementById('viewAngle').textContent = `View angle: ${camera.fov}`;
+        }
+
+        // Function to create the terrain mesh
+        function createTerrain(data) {
+            // Combine the longitude and latitude into a flat array for d3-delaunay
+            let xmin = Math.min(...data.longitude)
+            let xmax = Math.max(...data.longitude)
+            let ymin = Math.min(...data.latitude)
+            let ymax = Math.max(...data.latitude)
+            let ctx = 0.5 * (xmin + xmax)
+            let cty = 0.5 * (ymin + ymax)
+            const points = data.longitude.map((long, i) => [long-ctx, data.latitude[i]-cty]);
+
+            // Compute the Delaunay triangulation
+            // const delaunay = Delaunay.from(points);
+            const ptsArr = new Float32Array(points.flat())
+            //let delaunay = new Delaunator(ptsArr)
+            let delaunay = geoDelaunay(points);
+            const indices = delaunay.triangles.flat(); //only geoDelaunay needs flat()
+            console.log("delaunay.trianles: ", indices)
+
+            // Create a flat array for the z values (heights)
+            const vertices = [];
+            for (let i = 0; i < points.length; i++) {
+                vertices.push(points[i][0], points[i][1], data.z[i]);
+            }
+
+            // Create the Three.js geometry
+            const geometry = new THREE.BufferGeometry();
+            let valuesPerVertex = 3
+            let valuesPerIndex = 1
+            let positionAttribute = new THREE.Float32BufferAttribute(vertices, valuesPerVertex)
+            let indicesAttribute = new THREE.Uint32BufferAttribute(indices, valuesPerIndex)
+            //https://github.com/mapbox/delaunator/issues/81 
+            geometry.setAttribute("position", positionAttribute)
+            geometry.setIndex(indicesAttribute)
+            geometry.computeVertexNormals();
+
+            // Create the material, setting wireframe to true
+            const material = new THREE.MeshBasicMaterial({ color: 0x0000ff, side: THREE.DoubleSide, wireframe: true });
+
+            // Create the mesh and add it to the scene
+            mesh = new THREE.Mesh(geometry, material);
+            //mesh.position.set(0, 0, 0);
+            scene.add(mesh);
+
+            // Adjust the camera position and controls
+            let zh = Math.max(...data.z) 
+            zh = zh < 0? 0: zh  
+            console.log("camera at: ", ctx, cty, zh)
+            camera.position.set(xmax-ctx, ymin-cty-5, zh * 1.25); // (0, 0, 5) Adjust as needed
+            camera.lookAt(new THREE.Vector3(0, 0, 0));
+            controls.update();
+
+            render();
+        }
+
+        document.addEventListener('DOMContentLoaded', (event) => {
+            initThreeJS();
+	    document.getElementById('fetchPlotButton').addEventListener('click', fetchAndPlot);
+            controls.addEventListener('change', function() {
+                updateCameraInfo()
+                requestRenderIfNotRequested()
+            })
+            window.addEventListener('resize', requestRenderIfNotRequested);
+
+            if (!fetchMock) { createTerrain(mock_data1) }
+        })
     </script>
 </body>
 </html>
