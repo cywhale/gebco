@@ -132,7 +132,9 @@ def gebco(
         example="25.02,24.82",
     ),
     mode: Optional[str] = Query(
-        None, description="comma-separated modes: row, point. Optional can be none"
+        None,
+        description="comma-separated modes: row, point. Optional can be none.\n" +
+          "Special mode for polygon: zonly (not output pair-wise distance), lon360 (output longitude in [0, 360], for polygon mode and for the polygon which cross 180-degree only)."
     ),
     sample: Optional[int] = Query(
         5,
@@ -140,8 +142,9 @@ def gebco(
     ),
     jsonsrc: Optional[str] = Query(
         None,
-        description="Optional. A valid URL for JSON source or a JSON string that contains longitude and latitude keys with values in array.\n"
-        + 'Example: {"longitude":[122.36,122.47,122.56,122.66],"latitude":[25.02,24.82,24.72,24.62]}',
+        description="Optional. A valid URL for JSON source or a JSON string that contains longitude and latitude keys with values in array.\n" +
+          'Example: {"longitude":[122.36,122.47,122.56,122.66],"latitude":[25.02,24.82,24.72,24.62]}.\n' +
+          'New feature: GeoJSON to get terrain of polygon. Example: {"type": "Polygon", "coordinates": [[[121, 22.5], [121, 23.5], [122, 23.5], [122, 22.5], [121, 22.5]]]}. Feature collection is allowed.',
     ),
 ):
     polyMode = False
