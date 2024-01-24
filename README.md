@@ -18,7 +18,7 @@ https://api.odb.ntu.edu.tw/gebco/swagger
 
 * Data source
 
-    GEBCO Compilation Group (2022) GEBCO_2022 Grid (doi:10.5285/e0f0bb80-ab44-2739-e053-6c86abc0289c)
+    GEBCO Compilation Group (2023) GEBCO 2023 Grid (doi:10.5285/f98b053b-0cbc-6c23-e053-6c86abc0af7b)
     
     https://www.gebco.net/data_and_products/gridded_bathymetry_data/
 
