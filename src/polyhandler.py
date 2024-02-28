@@ -192,11 +192,15 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
         else:
             geojson = geojson_input
 
-        if geojson["type"] == "FeatureCollection":
+        if geojson["type"] == "FeatureCollection" or geojson["type"] == "Feature":
             hasFeature = True
             pts_coords = []
+            if geojson["type"] == "FeatureCollection":
+                geometries = geojson["features"]
+            else:
+                geometries = [geojson]
             # print("Got Feature collection and 0: ", geojson["features"][0]["geometry"])
-            for feature in geojson["features"]:
+            for feature in geometries:
                 geom = feature["geometry"]
                 if (
                     geom["type"] == "Point"

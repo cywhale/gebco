@@ -18,10 +18,13 @@ dev/wireframe01.ipynb
 dev/zprofile01.ipynb
 dev/zprofile02_crosszero.ipynb
 simu/Hidy_zseg_123E98_23N33_123_21N33.csv
+simu/check_geos_version.py
 simu/gebco_xy_123E98_23N33_123_21N33.csv
 simu/gebco_z_123E98_23N33_123_21N33.csv
 simu/gebco_zseg_123E98_23N33_123_21N33.csv
 simu/simu_mesh3D.html
+simu/simu_threeJS.html
+simu/test_mock_in_threejs.csv
 src/__init__.py
 src/config.py
 src/polyhandler.py

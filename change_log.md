@@ -58,3 +58,6 @@
 ###### ver 0.3.5 support longitude (0-360) output only when cross 180-degree line
 
 ###### ver 0.3.6 resample Polygon by every 5 points in default/upgrade python packages
+
+###### ver 0.3.7 support normal GeoJSON for jsonsrc input: {"type":"Feature","properties":{},"geometry":{"type":"Polygon",...
+
