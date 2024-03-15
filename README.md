@@ -4,7 +4,7 @@
 
 #### Swagger API doc
 
-<a href="https://api.odb.ntu.edu.tw/hub/swagger?node=odb_gebco_v1" target="_blank">GEBCO API manual/Online try-out</a>
+<a href="https://api.odb.ntu.edu.tw/hub/swagger?node=odb_gebco_v1" target="_blank">GEBCO API manual/online try-out</a>
 
 #### Usage
 
@@ -26,6 +26,13 @@
 ```
    https://api.odb.ntu.edu.tw/gebco?mode=zonly&jsonsrc={"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": { "type": "Polygon", "coordinates": [[[121, 22.5], [121, 23.5], [122, 23.5], [122, 22.5], [121, 22.5]]]}}]}
 ```
+
+#### Demo polygon-mode data by plotly on <a href="https://api.odb.ntu.edu.tw/hub" target="_blank">Ocean APIverse</a>
+
+<p align="center"><img src="https://github.com/cywhale/ODB/blob/master/img/gebco_terrain3D_202401.png" width=540 alt="Polygon-mode data by GEBCO API" /></p>
+
+*Given the polygon in GeoJSON, the 15 arc-seconds gridded GEBCO data can be obtained to present the 3D terrain of this area.*
+
 
 #### Attribution
 
