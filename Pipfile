@@ -4,22 +4,22 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-fastapi = "==0.110.0"
+fastapi = "==0.111.0"
 geopy = "==2.4.1"
-gunicorn = "==21.2.0"
+gunicorn = "==22.0.0"
 numpy = "==1.26.4"
-polars = "==0.20.15"
+polars = "==0.20.25"
 requests = "==2.31.0"
-uvicorn = "==0.28.0"
-xarray = "==2024.2.0"
-zarr = "==2.17.1"
+uvicorn = "==0.29.0"
+xarray = "==2024.3.0"
+zarr = "==2.18.0"
 setuptools = "==69.0.3"
 polars-lts-cpu = "==0.20.3"
-pyarrow = "==15.0.1"
+pyarrow = "==16.0.0"
 pygeos = "==0.14"
-shapely = "==2.0.3"
-orjson = "==3.9.15"
-dask = {extras = ["complete"], version = "==2024.3.0"}
+shapely = "==2.0.4"
+orjson = "==3.10.3"
+dask = {extras = ["complete"], version = "==2024.5.0"}
 
 [dev-packages]
 
