@@ -386,6 +386,10 @@ def zprofile(loni, lati, mode, sample=1):
             loc1[:, 0] = np.round(loc1[:, 0], 5)
             loc1[:, 1] = np.round(loc1[:, 1], 5)
 
+        # Ensure ALL longitudes are in 0-360 range if "lon360" mode is set
+        if "lon360" in mode:
+            loc1[:, 0] = np.where(loc1[:, 0] < 0, loc1[:, 0] + 360, loc1[:, 0])    
+
         if format == "row" or format == "dataframe":
             if not zonly:
                 df1 = pl.DataFrame(

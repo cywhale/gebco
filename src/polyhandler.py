@@ -168,7 +168,7 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
     hasFeature = False
     mode = (
         "dataframe"
-        if mode is None
+        if mode is None or mode == ""
         else (mode if "dataframe" in mode else mode + ",dataframe")
     )
 
@@ -286,6 +286,16 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
                     pl.col("latitude").round(5),
                 ]
             )
+
+        # Ensure ALL longitudes are in 0-360 range if "lon360" mode is set
+        if "lon360" in mode:
+            df = df.with_columns(
+                pl.when(pl.col("longitude") < 0)
+                .then(pl.col("longitude") + 360)
+                .otherwise(pl.col("longitude"))
+                .alias("longitude")
+            )
+
         return df, line_id
     else:
         return pl.DataFrame([], schema=consistent_schema), line_id
