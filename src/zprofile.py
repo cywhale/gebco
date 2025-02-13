@@ -380,6 +380,12 @@ def zprofile(loni, lati, mode, sample=1):
         )
         xt1 = ds_s1["elevation"].values[tuple(idx1.T)]
         ds_s1.close()
+
+        # 202502 add truncated mode: Apply truncation if "truncate" mode is enabled
+        if "truncate" in mode:
+            loc1[:, 0] = np.round(loc1[:, 0], 5)
+            loc1[:, 1] = np.round(loc1[:, 1], 5)
+
         if format == "row" or format == "dataframe":
             if not zonly:
                 df1 = pl.DataFrame(
@@ -412,17 +418,11 @@ def zprofile(loni, lati, mode, sample=1):
                         "z": xt1.tolist(),
                     }
                 )
-    # st = time.time()
-    # jt1 = orjson.dumps(xt1.tolist(), option=orjson.OPT_NAIVE_UTC |
-    #                   orjson.OPT_SERIALIZE_NUMPY)
-    # out = jsonable_encoder({"data": xt1.tolist()})
+
     if format == "dataframe":
         return df1
 
-    # ds.close()  # ds not close if internally return as dataframe #Move to lifespan
     if format == "row":
-        # out= df1.to_dict(orient='records') #by using pandas
         out = df1.to_dicts()  # by polars
-    # et = time.time()
-    # print('4 Convert JSON by fastapi: ', et-st, 'sec')
+
     return ORJSONResponse(content=out)

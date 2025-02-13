@@ -105,15 +105,18 @@ def process_polygon_part(
         }
     ).sort(["longitude", "latitude"], descending=sort_descending)
 
-    if "zonly" in mode:
-        append_cols = [pl.lit(line_id).cast(pl.Int16).alias("lineid")]
-    else:
-        append_cols = [
-            pl.lit(None).cast(pl.Float64).alias("distance"),
-            pl.lit(line_id).cast(pl.Int16).alias("lineid"),
-        ]
+    # Conditionally include "lineid" only if "lineid" mode is enabled
+    append_cols = []
+    if "lineid" in mode:
+        append_cols.append(pl.lit(line_id).cast(pl.Int16).alias("lineid"))
 
-    df = df.with_columns(append_cols)
+    # Add distance column if not in "zonly" mode
+    if "zonly" not in mode:
+        append_cols.append(pl.lit(None).cast(pl.Float64).alias("distance"))
+
+    if append_cols:
+        df = df.with_columns(append_cols)    
+
     return df
 
 
@@ -168,21 +171,19 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
         if mode is None
         else (mode if "dataframe" in mode else mode + ",dataframe")
     )
-    if "zonly" in mode.lower():
-        consistent_schema = {
-            "longitude": pl.Float64,
-            "latitude": pl.Float64,
-            "z": pl.Float64,
-            "lineid": pl.Int16,
-        }
-    else:
-        consistent_schema = {
-            "longitude": pl.Float64,
-            "latitude": pl.Float64,
-            "z": pl.Float64,
-            "distance": pl.Float64,
-            "lineid": pl.Int16,
-        }
+
+    # Define schema dynamically based on "lineid" mode
+    consistent_schema = {
+        "longitude": pl.Float64,
+        "latitude": pl.Float64,
+        "z": pl.Float64,
+    }
+    
+    if "zonly" not in mode:
+        consistent_schema["distance"] = pl.Float64
+
+    if "lineid" in mode:
+        consistent_schema["lineid"] = pl.Int16
 
     if isinstance(geojson_input, pygeos.lib.Geometry):
         geometry = geojson_input
@@ -275,6 +276,16 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
                 dataframes.append(part_df)
 
     if dataframes:
-        return pl.concat([df.cast(consistent_schema) for df in dataframes]), line_id
+        # return pl.concat([df.cast(consistent_schema) for df in dataframes]), line_id
+        df = pl.concat([df.cast(consistent_schema) for df in dataframes]) 
+        # 202502 add truncated mode: Apply truncation if "truncate" mode is enabled
+        if "truncate" in mode:
+            df = df.with_columns(
+                [
+                    pl.col("longitude").round(5),
+                    pl.col("latitude").round(5),
+                ]
+            )
+        return df, line_id
     else:
         return pl.DataFrame([], schema=consistent_schema), line_id

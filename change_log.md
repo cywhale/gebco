@@ -62,3 +62,5 @@
 ###### ver 0.3.7 support normal GeoJSON for jsonsrc input: {"type":"Feature","properties":{},"geometry":{"type":"Polygon",...
 
     -- small package upgrade/n2/README.md move swagger doc to Ocean APIverse
+
+###### ver 0.3.8 Add truncate mode to truncate lon/lat 5 decimal places. Not ouput lineid in default/major pacage upgrade

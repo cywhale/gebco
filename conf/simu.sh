@@ -21,6 +21,7 @@ cd "$HOME/python/gebco"
 gunicorn gebco_app:app -w 2 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload
 
 # debug
+## localhost: gunicorn gebco_app:app -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --timeout 120
 gunicorn gebco_app:app -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload --capture-output --log-level debug --access-logfile - --error-logfile -
 
 # pm2 start

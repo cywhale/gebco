@@ -147,8 +147,8 @@ def gebco(
     ),
     mode: Optional[str] = Query(
         None,
-        description="comma-separated modes: row, point. Optional can be none.\n"
-        + "Special mode for polygon: zonly (not output pair-wise distance), lon360 (output longitude in [0, 360], for polygon mode and for the polygon which cross 180-degree only).",
+        description="comma-separated modes: row, point, truncate(for longitude and latitude to 5 decimal places). Optional can be none.\n"
+        + "Special mode for polygon: zonly (not output pair-wise distance), lon360 (output longitude in [0, 360], for polygon mode and for the polygon which cross 180-degree only), lineid (output lineid for MultiLineString).",
     ),
     sample: Optional[int] = Query(
         5,
@@ -162,6 +162,9 @@ def gebco(
     ),
 ):
     polyMode = False
+    if mode is None:
+        mode = ""
+
     if sample is None or sample < 1:
         # sample = 1
         poly_sample = 5
