@@ -36,7 +36,7 @@ def generate_custom_openapi():
         "Data source: GEBCO Compilation Group (2023) GEBCO 2023 Grid (doi:10.5285/f98b053b-0cbc-6c23-e053-6c86abc0af7b)",
         routes=app.routes,
     )
-    openapi_schema["servers"] = [{"url": "https://api.odb.ntu.edu.tw"}]
+    openapi_schema["servers"] = [{"url": config.host}]
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 

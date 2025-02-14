@@ -53,3 +53,4 @@
 **/GEBCO*.nc
 **/GEBCO*.zarr
 **/test*.csv
+**/*.lock

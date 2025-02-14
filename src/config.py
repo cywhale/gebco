@@ -1,3 +1,7 @@
+from dotenv import load_dotenv
+import os
+load_dotenv()
+host = os.getenv('HOST', "http://localhost:8013")
 ds = None  # Declare ds as a global variable
 # arcsec =  #15
 arc = int(3600 / 15)  # 15 arc-second

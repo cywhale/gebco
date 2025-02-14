@@ -1,5 +1,6 @@
 dask[complete]==2025.1.0
 distributed==2025.1.0
+python-dotenv==1.0.1
 fastapi==0.115.8
 geopy==2.4.1
 gunicorn==23.0.0

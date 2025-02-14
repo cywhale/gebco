@@ -66,3 +66,5 @@
 ###### ver 0.3.8 Add truncate mode to truncate lon/lat 5 decimal places. Not ouput lineid in default/major pacage upgrade
 
 ###### ver 0.3.9 Fix lon360 mode to output in all cases (not restrict to polygon cross 180-degree)
+
+    -- add .env (use python-dotenv)
