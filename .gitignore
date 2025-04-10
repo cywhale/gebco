@@ -54,3 +54,4 @@
 **/GEBCO*.zarr
 **/test*.csv
 **/*.lock
+**/.python-version

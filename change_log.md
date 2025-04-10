@@ -68,3 +68,5 @@
 ###### ver 0.3.9 Fix lon360 mode to output in all cases (not restrict to polygon cross 180-degree)
 
     -- add .env (use python-dotenv)
+
+###### ver 0.4.0 Stable version with small package upgrade (as numpy remain at v1.26.4)
