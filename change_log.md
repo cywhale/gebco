@@ -70,3 +70,5 @@
     -- add .env (use python-dotenv)
 
 ###### ver 0.4.0 Stable version with small package upgrade (as numpy remain at v1.26.4)
+
+    -- back to numcodecs==0.15.1, which 0.16.0 cause zarr read error cannot import name cbuffer_sizes from numcodecs.blosc

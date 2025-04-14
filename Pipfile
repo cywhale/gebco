@@ -22,6 +22,7 @@ zarr = "==2.18.6"
 python-dotenv = "==1.1.0"
 dask = {extras = ["complete"], version = "==2025.3.0"}
 fastapi = {extras = ["standard"], version = "==0.115.12"}
+numcodecs = "==0.15.1"
 
 [dev-packages]
 

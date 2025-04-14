@@ -4,6 +4,7 @@ python-dotenv==1.1.0
 fastapi[standard]==0.115.12
 geopy==2.4.1
 gunicorn==23.0.0
+numcodecs==0.15.1
 numpy==1.26.4
 orjson==3.10.16
 polars==1.26.0
