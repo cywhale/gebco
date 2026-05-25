@@ -1,0 +1,27 @@
+[project]
+name = "gebco-api"
+version = "0.5.1"
+description = "Production runtime for the GEBCO bathymetry FastAPI service."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "dask[complete]==2025.3.0",
+    "distributed==2025.3.0",
+    "fastapi[standard]==0.115.12",
+    "geopy==2.4.1",
+    "gunicorn==23.0.0",
+    "numcodecs==0.15.1",
+    "numpy==1.26.4",
+    "orjson==3.10.16",
+    "polars==1.26.0",
+    "pyarrow==19.0.1",
+    "python-dotenv==1.1.0",
+    "requests==2.32.3",
+    "setuptools==78.1.0",
+    "shapely==2.0.7",
+    "uvicorn==0.34.0",
+    "xarray==2025.3.1",
+    "zarr==2.18.6",
+]
+
+[tool.uv]
+package = false

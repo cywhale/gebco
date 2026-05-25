@@ -18,8 +18,7 @@ gebco/
 ├── src/
 │   ├── config.py         # Module-global `ds` (xarray Dataset) + grid constants
 │   ├── zprofile.py       # Core elevation/distance lookup for point & line modes
-│   ├── polyhandler.py    # GeoJSON polygon handling (uses pygeos — shim'd to
-│   │                     #   shapely 2 in dev2026; native port slated v0.5.1)
+│   ├── polyhandler.py    # GeoJSON polygon handling (native Shapely 2 APIs)
 │   └── xmeridian.py      # 180°/0° meridian crossing helpers
 ├── data/                 # Zarr stores (NOT committed, see "Data sources")
 ├── data_src/             # Source NetCDF files (NOT committed)
@@ -114,28 +113,12 @@ production Zarr; the ice_surface variant is only useful for schema checks.
    has no 0.15.x aarch64 wheels — and that's fine: dev2026 is write-only,
    production reads with 0.15.1. Don't unify these without testing.
 
-5. **`pygeos` is dead** (last release 0.14, no cp312/3.13 wheels). The repo
-   still imports it in `src/polyhandler.py` for the polygon endpoint. The
-   migration target is shapely 2.0 (which absorbed pygeos wholesale into
-   its vectorised C-backed geometry layer). For dev2026 verification we
-   ship a 1:1 shapely-2.x-backed shim
-   (`dev2026/scripts/_pygeos_shim.py`) so polyhandler is importable on
-   Python 3.13 without modification.
-
-   **This shim is transitional, not the final architecture.** Migrating
-   `src/polyhandler.py` from `pygeos` to native Shapely 2 APIs is the
-   planned task for v0.5.1 (next release, before any Python-version bump
-   in production). The rewrite is mechanical — every symbol used in
-   polyhandler has a 1:1 shapely 2.x replacement (see the shim for the
-   mapping); the riskiest part is making sure the existing polars-based
-   data path still produces byte-equal output after the swap. A small
-   shapely-vs-pygeos micro-benchmark (single polygon mask of T1 size,
-   1000 iterations) is worth running once the rewrite lands so we can
-   sign off "no perf regression" with numbers rather than vibes. polars
-   itself is not slated for replacement — the reviewer confirmed it
-   installs cleanly in dev2026's `uv sync` on macOS/Linux and the real
-   polyhandler endpoint path runs unmodified through the shim; the
-   sandbox wrapper/binary mismatch we originally hit was sandbox-specific.
+5. **`pygeos` is dead** (last release 0.14, no cp312/3.13 wheels). This branch
+   has already ported `src/polyhandler.py` to native Shapely 2 APIs, so
+   production no longer depends on `pygeos`. Keep it that way: do not
+   reintroduce `pygeos` in production dependencies. `polars` remains in the
+   data path and is not considered a blocker — the reviewer confirmed it
+   installs cleanly in dev2026's `uv sync` envs on macOS/Linux.
 
 6. **`config.ds` is a module-level global** mutated by `lifespan`. Any unit
    test that bypasses FastAPI must set `src.config.ds`, `.arc`, `.basex`,
@@ -189,10 +172,8 @@ Used for 2026; reuse for 2027+.
    * `verify_polygon_meridian.py` — polygon MASK consistency (full-res) +
      cross-meridian line breakpoint regression.
    * `verify_polyhandler_endpoint.py` — real `polyhandler()` with the
-     production `sample=5` default. Loads the shapely-backed pygeos shim
-     automatically; requires polars in the dev2026 venv (`uv sync` handles
-     it on macOS/Linux). Until v0.5.1 ports polyhandler off pygeos, this
-     script is the only way to regress the polygon endpoint on Python 3.13.
+     production `sample=5` default. Requires polars in the dev2026 venv
+     (`uv sync` handles it on macOS/Linux).
 6. Update `gebco_app.py`: `lifespan` path, OpenAPI description (new DOI), and
    the endpoint summary string. Three string edits.
 7. Bump version in `change_log.md`.

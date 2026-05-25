@@ -58,4 +58,6 @@
 **/.venv
 /data/
 /data_src/
+!/uv.lock
 !/dev2026/uv.lock
+**/admin

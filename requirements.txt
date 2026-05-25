@@ -9,7 +9,6 @@ numpy==1.26.4
 orjson==3.10.16
 polars==1.26.0
 pyarrow==19.0.1
-pygeos==0.14
 Requests==2.32.3
 setuptools==78.1.0
 shapely==2.0.7

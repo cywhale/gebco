@@ -28,12 +28,10 @@ dev2026/
 │   ├── verify_polygon_meridian.py # polygon-MASK consistency + cross-meridian
 │   │                              #   line tests (full resolution, no sample=5;
 │   │                              #   polars-free, runnable in lean envs)
-│   ├── verify_polyhandler_endpoint.py
-│   │                              # polygon ENDPOINT regression — calls the
-│   │                              #   real src.polyhandler.polyhandler() with
-│   │                              #   sample=5 through the shapely-2.x shim
-│   └── _pygeos_shim.py            # shapely-2.x-backed pygeos shim, for
-│                                  #   when scripts need to import gebco_app
+│   └── verify_polyhandler_endpoint.py
+│                                  # polygon ENDPOINT regression — calls the
+│                                  #   real src.polyhandler.polyhandler() with
+│                                  #   sample=5
 └── tests/
     └── test_zarr.py               # pytest sanity checks (skip if no Zarr yet)
 ```
@@ -198,8 +196,8 @@ uv run python scripts/verify_polygon_meridian.py \
     --pass-percentile 95 --pass-threshold 200
 
 # (b) Polygon ENDPOINT regression with the production sample=5 default.
-#     Imports the REAL src.polyhandler.polyhandler() through a shapely-2.x
-#     pygeos shim; requires polars (installed by `uv sync`).
+#     Imports the REAL src.polyhandler.polyhandler(); requires polars
+#     (installed by `uv sync`).
 uv run python scripts/verify_polyhandler_endpoint.py \
     --sample 5 --pass-percentile 95 --pass-threshold 200
 ```
@@ -239,11 +237,10 @@ T1 2304 rows P95=155 m / T4 1152 rows P95=195 m.
 > constraint. If you only have shapely available, (a) still gives you a
 > meaningful consistency signal.
 >
-> **pygeos in dev2026.** `polyhandler` still imports pygeos 0.14, which has no
-> Python 3.13 wheel. `_pygeos_shim.py` patches `sys.modules['pygeos']` with a
-> shapely-2.x-backed module so the real polyhandler runs unmodified through
-> (b). This shim is **transitional** — porting `src/polyhandler.py` onto
-> native Shapely 2 APIs is the planned task for **v0.5.1**.
+> **Shapely 2 in production code.** `src/polyhandler.py` now uses native
+> Shapely 2 APIs, so polygon endpoint regression in (b) no longer depends on
+> a `pygeos` shim. Keep production dependencies aligned with that design:
+> `pygeos` should stay out of the runtime env.
 
 ## What stays out of scope (intentionally)
 

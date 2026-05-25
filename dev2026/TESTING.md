@@ -300,9 +300,8 @@ real `/gebco?jsonsrc=...` endpoint defaults to `sample=5` (a.k.a.
 ### C1b. Polygon endpoint regression with production `sample=5`
 
 For the user-visible endpoint behavior, we have a companion script that
-imports the REAL `src.polyhandler.polyhandler()` (through the
-shapely-2.x-backed pygeos shim) and calls it with `poly_sample=5` — exactly
-as `gebco_app.py:208-210` does:
+imports the REAL `src.polyhandler.polyhandler()` and calls it with
+`poly_sample=5` — exactly as `gebco_app.py:208-210` does:
 
 ```bash
 uv run python scripts/verify_polyhandler_endpoint.py \
@@ -426,10 +425,9 @@ re-run the same way; see Phase A above.
       `verify_polygon_meridian.py`, runnable anywhere shapely is available.
     - **Endpoint regression** (production `sample=5`) — covered by C1b/C2b
       via `verify_polyhandler_endpoint.py`, which imports the REAL
-      `src.polyhandler.polyhandler()` through the shapely-2.x-backed
-      pygeos shim. Reviewer reproduced in a clean `uv sync` env: T1 / T4
-      both pass identical row count + identical coords + P95 within
-      threshold.
+      `src.polyhandler.polyhandler()`. Reviewer reproduced in a clean
+      `uv sync` env: T1 / T4 both pass identical row count + identical
+      coords + P95 within threshold.
     - Polars installs cleanly in a stock dev2026 `uv sync` env on
       macOS / Linux; the wrapper/binary mismatch reported in an earlier
       Linux sandbox session was sandbox-specific, not a project constraint.

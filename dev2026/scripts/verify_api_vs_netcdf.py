@@ -79,32 +79,6 @@ def main() -> int:
 
     # --- optional FastAPI sanity smoke ----------------------------------------
     if args.with_fastapi:
-        # `gebco_app.py` imports `src.polyhandler`, which top-level imports
-        # `pygeos`. pygeos has no cp313 wheel and we don't exercise polygon
-        # endpoints from dev2026 — inject a minimal stub into sys.modules so
-        # the import succeeds. Any code that actually calls a pygeos function
-        # (only the polygon code path) will raise; the point/line endpoints we
-        # test here don't go anywhere near it.
-        import types, sys as _sys
-        if "pygeos" not in _sys.modules:
-            stub = types.ModuleType("pygeos")
-            class _StubGeometry:  # for pygeos.lib.Geometry isinstance checks
-                pass
-            stub_lib = types.ModuleType("pygeos.lib")
-            stub_lib.Geometry = _StubGeometry
-            stub.lib = stub_lib
-            def _unsupported(*_a, **_kw):
-                raise NotImplementedError(
-                    "pygeos is stubbed in the dev2026 venv (no cp313 wheels). "
-                    "Polygon-mode endpoints can only be exercised in the "
-                    "production Pipenv env."
-                )
-            for name in ("get_coordinates", "bounds", "from_shapely",
-                         "points", "contains"):
-                setattr(stub, name, _unsupported)
-            _sys.modules["pygeos"] = stub
-            _sys.modules["pygeos.lib"] = stub_lib
-
         # Neuter multiprocessing.Pool BEFORE importing gebco_app so the
         # dask.config.set(pool=Pool(4)) at module top doesn't try to fork.
         import multiprocessing.pool as _mpp

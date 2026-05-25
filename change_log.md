@@ -88,7 +88,13 @@
        T4 (crosses 180°) 1152 rows P95=195m, both pass on a clean
        dev2026 `uv sync` env (polars 1.41 + shapely 2.x).
     -- Deferred to v0.5.1 (migration / housekeeping, not behaviour change):
-       port src/polyhandler.py off pygeos onto native Shapely 2 APIs
-       (dev2026/scripts/_pygeos_shim.py is the transitional bridge); revisit
-       polars pin if needed. v0.5.0 ships with the shim in place — reviewer
-       confirmed the real polyhandler path runs unmodified through it.
+       revisit polars pin if needed; pygeos→Shapely 2 migration is tracked
+       separately in specs/v0.5.1_migration_plan.md
+
+#### ver 0.5.1 Runtime/deployment hardening after GEBCO_2026 upgrade
+
+    -- Port src/polyhandler.py from pygeos to native Shapely 2 APIs
+    -- Remove pygeos from production dependency manifests (Pipfile, requirements, root uv env)
+    -- Add root pyproject.toml + uv.lock for production runtime migration planning
+    -- Verify polygon endpoint regression still passes (T1/T4, sample=5) after the port
+    -- Add specs/v0.5.1_migration_plan.md and VM37 no-downtime staging rules

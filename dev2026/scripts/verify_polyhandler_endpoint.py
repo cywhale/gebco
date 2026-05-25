@@ -23,11 +23,10 @@ Why this script exists (vs `verify_polygon_meridian.py`):
 
 Why it's a separate script (not folded into verify_polygon_meridian.py):
 
-  Importing `src.polyhandler` requires `pygeos` + `polars`. We provide a
-  shapely-2.x-backed pygeos shim (`_pygeos_shim.py`); polars is a real
-  binary dep. In a normal dev2026 uv env on Mac or Linux, both install
-  cleanly via `uv sync` and this script runs as-is. The earlier mask-level
-  script intentionally stays shim-free so it can be run anywhere shapely is
+  Importing `src.polyhandler` requires `polars`, which is a real binary dep.
+  In a normal dev2026 uv env on Mac or Linux it installs cleanly via
+  `uv sync` and this script runs as-is. The earlier mask-level script
+  intentionally stays polars-free so it can be run anywhere shapely is
   available, including resource-constrained sandboxes where polars install
   is flaky.
 
@@ -49,7 +48,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 import warnings
 from pathlib import Path
@@ -60,20 +58,9 @@ warnings.simplefilter("ignore")
 import dask
 dask.config.set(scheduler="single-threaded")
 
+import sys
+
 _REPO_ROOT_DEFAULT = Path(__file__).resolve().parents[2]
-
-
-def _install_shim_if_needed() -> None:
-    """Install the shapely-backed pygeos shim *before* importing polyhandler."""
-    try:
-        import pygeos  # noqa: F401
-        # Real pygeos present (unlikely on cp313). Keep it.
-        return
-    except Exception:
-        pass
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from _pygeos_shim import install_shim  # type: ignore
-    install_shim()
 
 
 def _open_zarr(path: Path):
@@ -165,7 +152,6 @@ def main() -> int:
         args.zarr_new = args.repo_root / "data" / "GEBCO_2026_sub_ice_topo.zarr"
 
     sys.path.insert(0, str(args.repo_root))
-    _install_shim_if_needed()
     import src.config as config
 
     print(f"[open] OLD {args.zarr_old}")
