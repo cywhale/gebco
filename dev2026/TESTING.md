@@ -379,6 +379,143 @@ This is the source-of-truth endpoint regression for polygon mode. C1 / C2
 above remain the full-resolution mask-level consistency check; both layers
 pass for v0.5.0.
 
+## Phase D. VM37 staging benchmark against current production
+
+Purpose: compare the current production API (2023 data source) and the staged
+2026 API on the **same VM** without touching the live `pm2` service.
+
+Important detail: the live production bind on VM37 is **HTTPS on loopback**:
+`https://127.0.0.1:8013/gebco` (gunicorn started with `--keyfile` /
+`--certfile`). If you benchmark it as plain HTTP you will get a misleading
+`RemoteDisconnected` failure. The staged app on `127.0.0.1:18013` is plain
+HTTP unless you deliberately add TLS flags.
+
+### D1. Reproducer (VM37, non-production port)
+
+On VM37, from the staging checkout:
+
+```bash
+cd ~/python/gebco/.stage_v051
+
+# ensure no stale listener is left on 18013
+python3 - <<'PY'
+import os, re, signal, subprocess
+out = subprocess.check_output(["ss", "-ltnp"], text=True)
+for line in out.splitlines():
+    if ":18013" not in line:
+        continue
+    for pid in re.findall(r"pid=(\d+)", line):
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+PY
+
+./.venv/bin/gunicorn gebco_app:app \
+    -w 2 \
+    -k uvicorn.workers.UvicornWorker \
+    -b 127.0.0.1:18013 >/tmp/gebco_stage18013.out 2>/tmp/gebco_stage18013.err &
+GPID=$!
+sleep 6
+
+./.venv/bin/python - <<'PY'
+import gc, json, statistics, time, urllib3
+import requests
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ~1,016,064 rows with polygon sample=5
+poly = {
+    "type": "Polygon",
+    "coordinates": [[[140.0, 0.0], [140.0, 21.0],
+                     [161.0, 21.0], [161.0, 0.0],
+                     [140.0, 0.0]]],
+}
+params = {"jsonsrc": json.dumps(poly), "mode": "zonly"}
+
+prod = "https://127.0.0.1:8013/gebco"   # current production (TLS on loopback)
+stage = "http://127.0.0.1:18013/gebco"  # staging checkout
+
+# small correctness smoke (point mode)
+pt_params = {"lon": "122.36", "lat": "25.02", "mode": "point"}
+pt_old = requests.get(prod, params=pt_params, timeout=60, verify=False).json()
+pt_new = requests.get(stage, params=pt_params, timeout=60).json()
+print("[POINT] old=", pt_old)
+print("[POINT] new=", pt_new)
+print("[POINT] exact_match=", pt_old == pt_new)
+
+def run_once(url, verify):
+    t0 = time.perf_counter()
+    r = requests.get(url, params=params, timeout=300, verify=verify)
+    elapsed = time.perf_counter() - t0
+    r.raise_for_status()
+    j = r.json()
+    rows = len(j["longitude"])
+    del j, r
+    gc.collect()
+    return elapsed, rows
+
+results = {}
+for label, url, verify in (("OLD", prod, False), ("NEW", stage, True)):
+    warm, rows = run_once(url, verify)
+    times = []
+    for _ in range(2):
+        t, rows2 = run_once(url, verify)
+        assert rows2 == rows
+        times.append(t)
+    results[label] = {"rows": rows, "warmup": warm, "times": times}
+    print(
+        f"[{label}] rows={rows} warmup={warm:.3f}s "
+        f"measured={times[0]:.3f}s,{times[1]:.3f}s "
+        f"mean={statistics.mean(times):.3f}s median={statistics.median(times):.3f}s"
+    )
+
+old_mean = statistics.mean(results["OLD"]["times"])
+new_mean = statistics.mean(results["NEW"]["times"])
+print(f"[RATIO] NEW/OLD mean={new_mean / old_mean:.3f}x")
+PY
+
+kill $GPID
+wait $GPID 2>/dev/null || true
+```
+
+### D2. Result (2026-05-26 08:47, VM37 local loopback)
+
+Benchmark target:
+
+* one polygon request
+* `mode=zonly`
+* approx `1,016,064` returned rows
+* production = `https://127.0.0.1:8013/gebco`
+* staging = `http://127.0.0.1:18013/gebco`
+* both with gunicorn `-w 2`
+
+Small correctness smoke:
+
+| Case | OLD (2023 prod) | NEW (2026 stage) | verdict |
+|------|------------------|------------------|---------|
+| point `lon=122.36 lat=25.02` | `z=-1140` | `z=-1173` | expected different (different GEBCO release) |
+
+Large payload speed result:
+
+| Target | rows | warmup | measured 1 | measured 2 | mean | median |
+|--------|------|--------|------------|------------|------|--------|
+| OLD production (`8013`, HTTPS) | 1,016,064 | 1.317 s | 1.452 s | 1.250 s | 1.351 s | 1.351 s |
+| NEW staging (`18013`, HTTP)    | 1,016,064 | 1.728 s | 1.396 s | 1.259 s | 1.327 s | 1.327 s |
+
+Derived ratio:
+
+* `NEW / OLD mean = 0.983x`
+
+Interpretation:
+
+* On a ~1M-row polygon payload, the staged 2026 API is effectively at parity
+  with current production on the same VM.
+* In this run the staged API is ~1.7% faster, which is comfortably within the
+  "not slower than production" acceptance goal.
+* The point-mode value mismatch is **not** a regression signal here — it is
+  expected because OLD serves GEBCO_2023 and NEW serves GEBCO_2026.
+
 
 
 For a future agent who wants a single command to repeat all of B2–B4:

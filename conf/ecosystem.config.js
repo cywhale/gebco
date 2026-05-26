@@ -1,8 +1,8 @@
 module.exports = {
   apps : [{
     name: 'gebco',
-    script: 'gunicorn gebco_app:app -w 2 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload',
-    args: '',
+    script: './.venv/bin/gunicorn',
+    args: 'gebco_app:app -w 2 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem',
     merge_logs: true,
     autorestart: true,
     log_file: "tmp/combined.outerr.log",
@@ -15,4 +15,3 @@ module.exports = {
     pre_stop:"ps -ef | grep -w 'gebco_app' | grep -v grep | awk '{print $2}' | xargs -r kill -9"
   }],
 };
-

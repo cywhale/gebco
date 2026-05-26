@@ -294,6 +294,29 @@ stage the upgrade in a separate checkout and run a loopback-only test port:
 
 ```bash
 cd ~/python/gebco
+./scripts/setup_vm37_stage.sh
+```
+
+That script will:
+
+1. create or refresh `~/python/gebco/.stage_v051`
+2. hard-reset it to `origin/gebco_2026_api`
+3. run `uv sync --frozen --python 3.11`
+4. install the correct Polars variant via `./scripts/install_polars_variant.sh auto`
+5. verify that `data/GEBCO_2026_sub_ice_topo.zarr` exists in the staging checkout
+
+By default it **does not** start gunicorn. To have it start the staging server
+immediately on `127.0.0.1:18013`, run:
+
+```bash
+cd ~/python/gebco
+START_STAGE=1 ./scripts/setup_vm37_stage.sh
+```
+
+Manual equivalent:
+
+```bash
+cd ~/python/gebco
 git clone --branch gebco_2026_api --single-branch \
   https://github.com/cywhale/gebco.git .stage_v051
 
