@@ -12,10 +12,12 @@ set -euo pipefail
 #   POLARS_PACKAGE  same values as the first positional arg
 #   POLARS_VERSION  defaults to 1.26.0 to match the repo's current production pin
 #   UV_BIN          defaults to uv
+#   TARGET_PYTHON   defaults to ./.venv/bin/python
 
 MODE="${1:-${POLARS_PACKAGE:-auto}}"
 VERSION="${POLARS_VERSION:-1.26.0}"
 UV_BIN="${UV_BIN:-uv}"
+TARGET_PYTHON="${TARGET_PYTHON:-$(pwd)/.venv/bin/python}"
 
 have_linux_cpu_flags() {
   [[ -r /proc/cpuinfo ]]
@@ -56,12 +58,18 @@ resolve_package() {
 PACKAGE="$(resolve_package)"
 
 echo "[polars] mode=$MODE resolved=$PACKAGE version=$VERSION"
+echo "[polars] target_python=$TARGET_PYTHON"
+
+if [[ ! -x "$TARGET_PYTHON" ]]; then
+  echo "target python does not exist or is not executable: $TARGET_PYTHON" >&2
+  exit 3
+fi
 
 # Remove whichever variant might already be present to avoid name/module conflicts.
-"$UV_BIN" pip uninstall -y polars polars-lts-cpu >/dev/null 2>&1 || true
-"$UV_BIN" pip install "${PACKAGE}==${VERSION}"
+"$UV_BIN" pip uninstall --python "$TARGET_PYTHON" -y polars polars-lts-cpu >/dev/null 2>&1 || true
+"$UV_BIN" pip install --python "$TARGET_PYTHON" "${PACKAGE}==${VERSION}"
 
-"$UV_BIN" run python - <<'PY'
+"$TARGET_PYTHON" - <<'PY'
 import polars as pl
 print(f"[polars] import ok version={pl.__version__}")
 PY
