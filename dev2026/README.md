@@ -252,3 +252,76 @@ T1 2304 rows P95=155 m / T4 1152 rows P95=195 m.
   one), not edits to the old one.
 * `../README.md` is end-user facing and only gets touched once the release
   ships.
+
+## Production deployment notes (v0.5.1 staging plan)
+
+The production deployment path is now:
+
+```bash
+cd ..
+uv sync --python 3.11
+./scripts/install_polars_variant.sh auto
+```
+
+Why the second step exists:
+
+* `src/polyhandler.py` uses `polars` only in the polygon endpoint path.
+* On older x86-64 CPUs, the normal `polars` wheel can warn about missing CPU
+  features (`avx2`, `bmi1`, `bmi2`, `lzcnt`) and may be unsafe to run.
+* `polars-lts-cpu` is the compatible fallback, but it cannot coexist with
+  `polars` in the same venv because both provide the same `polars` module.
+
+So the supported deployment pattern is:
+
+1. Build the base root `.venv` with `uv sync`.
+2. Run `./scripts/install_polars_variant.sh auto`.
+3. Let that helper choose:
+   * `polars==1.26.0` on modern CPUs
+   * `polars-lts-cpu==1.26.0` on older CPUs
+
+You can override the selection explicitly if needed:
+
+```bash
+POLARS_PACKAGE=polars ./scripts/install_polars_variant.sh
+POLARS_PACKAGE=polars-lts-cpu ./scripts/install_polars_variant.sh
+POLARS_VERSION=1.26.0 ./scripts/install_polars_variant.sh auto
+```
+
+### VM37 no-downtime staging recipe
+
+To avoid touching the live `pm2` process (`gebco` on `127.0.0.1:8013`),
+stage the upgrade in a separate checkout and run a loopback-only test port:
+
+```bash
+cd ~/python/gebco
+git clone --branch gebco_2026_api --single-branch \
+  https://github.com/cywhale/gebco.git .stage_v051
+
+cd .stage_v051
+uv sync --python 3.11
+./scripts/install_polars_variant.sh auto
+
+# copy or rsync the canonical Zarr into ./data first:
+#   data/GEBCO_2026_sub_ice_topo.zarr
+
+./.venv/bin/gunicorn gebco_app:app \
+  -w 1 \
+  -k uvicorn.workers.UvicornWorker \
+  -b 127.0.0.1:18013
+```
+
+Then smoke-test locally on the VM, for example:
+
+```bash
+python - <<'PY'
+import json, requests
+base = "http://127.0.0.1:18013/gebco"
+print(requests.get(base, params={"lon":"122.36","lat":"25.02","mode":"point"}).json())
+print(requests.get(base, params={"lon":"179.5,-179.5","lat":"-17.25,-17.25","mode":"zonly"}).json()["z"][:3])
+poly = {"type":"Polygon","coordinates":[[[121.5,23.0],[121.5,24.0],[122.5,24.0],[122.5,23.0],[121.5,23.0]]]}
+print(len(requests.get(base, params={"jsonsrc": json.dumps(poly), "mode":"zonly"}).json()["longitude"]))
+PY
+```
+
+VM37 staging was verified this way on `2026-05-26` without restarting `pm2`
+or touching `127.0.0.1:8013`.

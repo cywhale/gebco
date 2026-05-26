@@ -12,7 +12,6 @@ dependencies = [
     "numcodecs==0.15.1",
     "numpy==1.26.4",
     "orjson==3.10.16",
-    "polars==1.26.0",
     "pyarrow==19.0.1",
     "python-dotenv==1.1.0",
     "requests==2.32.3",

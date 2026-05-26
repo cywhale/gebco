@@ -30,6 +30,7 @@ gebco/
 │   ├── scripts/          # convert / verify / compare / benchmark
 │   └── tests/            # pytest sanity checks
 ├── conf/                 # gunicorn/pm2 config
+├── scripts/              # deployment/runtime helper scripts
 ├── simu/                 # legacy experiment scripts (ignore unless asked)
 ├── Pipfile / Pipfile.lock  # Production runtime (Python 3.11, Pipenv)
 ├── requirements.txt      # Mirror of Pipfile (for non-Pipenv deployments)
@@ -49,13 +50,13 @@ gebco/
 
 ## Two parallel Python environments — keep them straight
 
-| Concern           | Production (`./`)                           | Tooling (`./dev2026/`)                       |
-|-------------------|---------------------------------------------|----------------------------------------------|
-| Manager           | Pipenv (`Pipfile`)                          | uv (`pyproject.toml`)                        |
-| Python            | 3.11                                        | 3.13                                         |
-| zarr              | 2.18.6                                      | 2.18 ≤ x < 3 (or 3.x writing v2 layout)      |
-| numcodecs         | 0.15.1 (see gotcha)                         | ≥ 0.15.1 (Blosc/Zlib codecs are stable)      |
-| Used by           | `uvicorn gebco_app:app`                     | offline conversion + offline verification    |
+| Concern           | Production (`./`)                                  | Tooling (`./dev2026/`)                       |
+|-------------------|----------------------------------------------------|----------------------------------------------|
+| Manager           | uv (`pyproject.toml`) for v0.5.1+ deployment       | uv (`pyproject.toml`)                        |
+| Python            | 3.11 for current staging/deploy plan               | 3.13                                         |
+| zarr              | 2.18.6                                             | 2.18 ≤ x < 3 (or 3.x writing v2 layout)      |
+| numcodecs         | 0.15.1 (see gotcha)                                | ≥ 0.15.1 (Blosc/Zlib codecs are stable)      |
+| Used by           | gunicorn/uvicorn FastAPI runtime on VMs            | offline conversion + offline verification    |
 
 The production app reads the Zarr; the dev2026 tooling writes it. As long as
 the on-disk Zarr is **v2 layout** with a codec the production env has
@@ -120,17 +121,29 @@ production Zarr; the ice_surface variant is only useful for schema checks.
    data path and is not considered a blocker — the reviewer confirmed it
    installs cleanly in dev2026's `uv sync` envs on macOS/Linux.
 
-6. **`config.ds` is a module-level global** mutated by `lifespan`. Any unit
+6. **Production Polars wheel must be chosen per VM CPU capability.**
+   On older x86-64 hosts, the normal `polars` wheel warns about missing CPU
+   features (`avx2`, `bmi1`, `bmi2`, `lzcnt`) and may crash. The supported
+   deployment pattern is:
+   * run root `uv sync` first (base env does **not** include polars)
+   * then run `./scripts/install_polars_variant.sh auto`
+   * the helper installs `polars==1.26.0` on modern CPUs, otherwise
+     `polars-lts-cpu==1.26.0`
+   Do **not** install both in one venv; they expose the same `polars` module
+   and conflict. If a VM needs an override, use `POLARS_PACKAGE=polars` or
+   `POLARS_PACKAGE=polars-lts-cpu` explicitly.
+
+7. **`config.ds` is a module-level global** mutated by `lifespan`. Any unit
    test that bypasses FastAPI must set `src.config.ds`, `.arc`, `.basex`,
    `.basey` manually. See `dev2026/scripts/verify_api_vs_netcdf.py` for the
    minimal setup recipe.
 
-7. **`mode=point` still calls `zdata_bbox()`** which slices a single bbox
+8. **`mode=point` still calls `zdata_bbox()`** which slices a single bbox
    covering all input points. Querying many globally-scattered points in one
    call can trigger a near-full-grid materialise → OOM. For verification
    workloads, prefer single-point queries in a loop (see the same script).
 
-8. **Cowork desktop sandbox specific** (only relevant if you're running there):
+9. **Cowork desktop sandbox specific** (only relevant if you're running there):
    the virtiofs mount disallows `unlink` and `rmdir` on user files. `zarr`'s
    `LocalStore` and `xarray`'s `to_zarr(mode="w")` both internally call
    `shutil.rmtree`, which fails. `dev2026/scripts/convert_to_zarr.py` and
@@ -138,7 +151,7 @@ production Zarr; the ice_surface variant is only useful for schema checks.
    (`os.unlink`/`os.rmdir`/`shutil.rmtree` → no-op on `PermissionError`).
    Final cleanup of leftover `.partial` files happens on the user's Mac side.
 
-9. **Data paths in `gebco_app.py` are anchored to `__file__`, not cwd.**
+10. **Data paths in `gebco_app.py` are anchored to `__file__`, not cwd.**
    Production gunicorn/pm2 always launches from repo root so a bare
    `"data/GEBCO_2026_sub_ice_topo.zarr"` would have worked; but `dev2026`
    verification scripts run from inside `dev2026/` and need
@@ -146,7 +159,7 @@ production Zarr; the ice_surface variant is only useful for schema checks.
    add new on-disk artefacts (e.g. logs, caches), anchor those to `__file__`
    too for the same reason.
 
-10. **`data/GEBCO_2026_sub_ice_topo.zlib_quarantine.zarr` may still exist on
+11. **`data/GEBCO_2026_sub_ice_topo.zlib_quarantine.zarr` may still exist on
     disk** as a leftover from the rename-swap that promoted Blosc to canonical
     inside the cowork sandbox (which forbids `rm`). It's safe to ignore — the
     app only reads the canonical name — but you can `rm -rf` it on a normal
