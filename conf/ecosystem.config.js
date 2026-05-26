@@ -1,8 +1,9 @@
 module.exports = {
   apps : [{
     name: 'gebco',
-    script: './.venv/bin/gunicorn',
-    args: 'gebco_app:app -w 2 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem',
+    cwd: `${__dirname}/..`,
+    script: '/bin/bash',
+    args: '-lc "./.venv/bin/gunicorn gebco_app:app -w 2 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem"',
     merge_logs: true,
     autorestart: true,
     log_file: "tmp/combined.outerr.log",
