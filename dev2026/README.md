@@ -348,3 +348,20 @@ PY
 
 VM37 staging was verified this way on `2026-05-26` without restarting `pm2`
 or touching `127.0.0.1:8013`.
+
+### Confirm which gebco pm2 is running
+
+On VM37, the quickest check is:
+
+```bash
+pm2 describe gebco | egrep 'exec cwd|script path|script args|revision|branch'
+```
+
+If cutover is on the GEBCO_2026 runtime, expect:
+
+* `exec cwd` under `~/python/gebco/.stage_v051`
+* `script args` containing `./.venv/bin/gunicorn`
+* `branch = gebco_2026_api`
+
+That combination tells you `pm2` is serving the new root-`uv` environment,
+not the legacy `main` checkout / old pyenv-based gunicorn.

@@ -516,6 +516,30 @@ Interpretation:
 * The point-mode value mismatch is **not** a regression signal here — it is
   expected because OLD serves GEBCO_2023 and NEW serves GEBCO_2026.
 
+### D3. VM37 production cutover result (2026-05-26 13:25 +08)
+
+After the staging benchmark passed, production was switched to the staged
+checkout by:
+
+1. updating `conf/ecosystem.config.js` so `pm2` launches gunicorn through
+   `/bin/bash -lc` (avoids Node trying to parse the Python entrypoint),
+2. refreshing `~/python/gebco/.stage_v051` to the latest `gebco_2026_api`,
+3. stopping the orphaned old pyenv/gunicorn listener on `127.0.0.1:8013`,
+4. restarting `pm2` app `gebco`, which then bound `8013` from the staged
+   checkout and served the GEBCO_2026 Zarr.
+
+Verification after cutover:
+
+| Check | Result |
+|------|--------|
+| `pm2 describe gebco` | `exec cwd=/home/odbadmin/python/gebco/.stage_v051`, `branch=gebco_2026_api`, `revision=573d8ac...` |
+| VM37 loopback | `https://127.0.0.1:8013/gebco?lon=122.36&lat=25.02&mode=point` → `z=-1173` |
+| Public endpoint | `https://api.odb.ntu.edu.tw/gebco?lon=122.36&lat=25.02&mode=point` → HTTP 200, `z=-1173` |
+| Process persistence | `pm2 save` completed successfully |
+
+This is the final acceptance point for v0.5.1 on VM37: production serves the
+new GEBCO_2026 dataset through the root-`uv` runtime and pm2-managed gunicorn.
+
 
 
 For a future agent who wants a single command to repeat all of B2–B4:

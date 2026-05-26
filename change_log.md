@@ -95,6 +95,8 @@
 
     -- Port src/polyhandler.py from pygeos to native Shapely 2 APIs
     -- Remove pygeos from production dependency manifests (Pipfile, requirements, root uv env)
-    -- Add root pyproject.toml + uv.lock for production runtime migration planning
+    -- Add root pyproject.toml + uv.lock and migrate production runtime plan to uv-managed .venv
     -- Verify polygon endpoint regression still passes (T1/T4, sample=5) after the port
-    -- Add specs/v0.5.1_migration_plan.md and VM37 no-downtime staging rules
+    -- Add CPU-aware Polars installer (polars vs polars-lts-cpu) for mixed-VM deployment
+    -- Add specs/v0.5.1_migration_plan.md and VM37 no-downtime staging/cutover rules
+    -- Cut over VM37 pm2 production to GEBCO_2026 via .stage_v051 root-uv runtime
