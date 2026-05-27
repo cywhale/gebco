@@ -2,17 +2,20 @@
   "openapi": "3.0.2",
   "info": {
     "title": "ODB API for GEBCO Bathymetry",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "servers": [
     {
       "url": "https://api.odb.ntu.edu.tw"
+    },
+    {
+      "url": "https://eco.odb.ntu.edu.tw"
     }
   ],
   "paths": {
     "/gebco": {
       "get": {
-        "summary": "Z-profile along geo-points by using GEBCO data",
+        "summary": "Z-profile along geo-points by using GEBCO_2026 data",
         "tags": [
           "GEBCO"
         ],

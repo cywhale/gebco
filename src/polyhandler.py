@@ -1,8 +1,9 @@
-import pygeos
 import polars as pl
 import numpy as np
 import json
+import shapely
 from shapely.geometry import shape, Polygon, LineString
+from shapely.geometry.base import BaseGeometry
 from shapely.ops import split
 from src.zprofile import zprofile, zdata_bbox
 from src.xmeridian import whichSide
@@ -17,7 +18,7 @@ def transform_coords_to_360(polygon):
 
     # here polygon not from a shape(geom) but already a geometry, so that cannot use polygon.exterior.coords
     transformed_coords = [
-        transform_coord(lon, lat) for lon, lat in pygeos.get_coordinates(polygon)
+        transform_coord(lon, lat) for lon, lat in shapely.get_coordinates(polygon)
     ]
     return Polygon(transformed_coords)
 
@@ -63,7 +64,7 @@ def coords_zprof(coords, line_id, mode, sample):
 
 
 def process_linestring(line, line_id, mode, sample):
-    coordx = pygeos.get_coordinates(line)
+    coordx = shapely.get_coordinates(line)
     return coords_zprof(coordx, line_id, mode, sample)
 
 
@@ -73,17 +74,17 @@ def process_polygon_part(
     if crosses_180:
         trans_coords = transform_back_to_180(polygon.exterior.coords, isRight)
     else:
-        trans_coords = transform_back_to_180(pygeos.get_coordinates(polygon), isRight)
-    trans_poly = pygeos.from_shapely(Polygon(trans_coords))
-    minx, miny, maxx, maxy = pygeos.bounds(trans_poly)
+        trans_coords = transform_back_to_180(shapely.get_coordinates(polygon), isRight)
+    trans_poly = Polygon(trans_coords)
+    minx, miny, maxx, maxy = shapely.bounds(trans_poly)
     subset_data = zdata_bbox(
         (minx, miny, maxx, maxy), crosses_180, isRight, poly_sample
     )
 
     # Create a mask for data points within the polygon
     lons, lats = np.meshgrid(subset_data.lon, subset_data.lat)
-    points = pygeos.points(lons.ravel(), lats.ravel())
-    mask = pygeos.contains(trans_poly, points)
+    points = shapely.points(lons.ravel(), lats.ravel())
+    mask = shapely.contains(trans_poly, points)
     mask_reshaped = mask.reshape(lats.shape)
 
     # Apply mask and create DataFrame
@@ -121,8 +122,7 @@ def process_polygon_part(
 
 
 def process_polygon(polygon, line_id, mode, poly_sample):
-    # pygeos_poly = pygeos.from_shapely(polygon)
-    minx, miny, maxx, maxy = pygeos.bounds(polygon)
+    minx, miny, maxx, maxy = shapely.bounds(polygon)
     # crosses_180 = minx < -170 and maxx > 170
     crosses_180 = whichSide([minx], [maxx]) == "away-zero"
 
@@ -185,7 +185,7 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
     if "lineid" in mode:
         consistent_schema["lineid"] = pl.Int16
 
-    if isinstance(geojson_input, pygeos.lib.Geometry):
+    if isinstance(geojson_input, BaseGeometry):
         geometry = geojson_input
     elif "type" in geojson_input or isinstance(geojson_input, str):
         if isinstance(geojson_input, str):
@@ -223,7 +223,7 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
                         line_id += 1
                         pts_coords = []
 
-                    geometry = pygeos.from_shapely(shape(geom))
+                    geometry = shape(geom)
                     df, line_id = polyhandler(
                         geometry, line_id, mode, sample, poly_sample
                     )
@@ -234,16 +234,16 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
                 dataframes.append(df)
                 line_id += 1
         else:
-            geometry = pygeos.from_shapely(shape(geojson))
+            geometry = shape(geojson)
     else:
-        raise ValueError("Input must be a GeoJSON object or a PyGEOS Geometry")
+        raise ValueError("Input must be a GeoJSON object or a Shapely Geometry")
 
     if not hasFeature:
-        geom_type = pygeos.get_type_id(geometry)
+        geom_type = geometry.geom_type
         print(
             "Got geometry: ",
             geometry,
-            " with type id: ",
+            " with type: ",
             geom_type,
             " with mode: ",
             mode,
@@ -252,26 +252,26 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
         )
         # interval = 15 / 3600  # 15 arc-seconds in degrees
 
-        if geom_type in [0, 1, 2, 4]:  # POINT, LINESTRING, LINEARRING, MULTIPOINT
+        if geom_type in {"Point", "LineString", "LinearRing", "MultiPoint"}:
             df = process_linestring(geometry, line_id, mode, sample)
             dataframes.append(df)
             line_id += 1
-        elif geom_type == 3:  # POLYGON
+        elif geom_type == "Polygon":
             df = process_polygon(geometry, line_id, mode, poly_sample)
             dataframes.append(df)
             line_id += 1
-        elif geom_type in [5]:  # MULTILINESTRING
-            for part in pygeos.get_parts(geometry):
+        elif geom_type == "MultiLineString":
+            for part in geometry.geoms:
                 df = process_linestring(part, line_id, mode, sample)
                 dataframes.append(df)
                 line_id += 1
-        elif geom_type == 6:  # MULTIPOLYGON
-            for polygon in pygeos.get_parts(geometry):
+        elif geom_type == "MultiPolygon":
+            for polygon in geometry.geoms:
                 df = process_polygon(polygon, line_id, mode, poly_sample)
                 dataframes.append(df)
                 line_id += 1
-        elif geom_type == 7:  # GEOMETRYCOLLECTION
-            for part in pygeos.get_parts(geometry):
+        elif geom_type == "GeometryCollection":
+            for part in geometry.geoms:
                 part_df, line_id = polyhandler(part, line_id, mode, sample, poly_sample)
                 dataframes.append(part_df)
 

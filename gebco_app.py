@@ -6,7 +6,15 @@ from fastapi.responses import JSONResponse, ORJSONResponse
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional  # , Union
+
+# Resolve data/ paths relative to this file, NOT the current working directory.
+# Production launchers (gunicorn / pm2) always cd into the repo root so the
+# previous "data/..." relative path worked there, but dev2026 verification
+# scripts run from outside the repo root and would FileNotFoundError on the
+# old path. Anchoring to __file__ is correct in both cases.
+_APP_ROOT = Path(__file__).resolve().parent
 
 # from pydantic import BaseModel, ValidationError, HttpUrl, validator
 import requests
@@ -28,15 +36,17 @@ def generate_custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     openapi_schema = get_openapi(
-        title="ODB API for GEBCO Bathymetry",
-        version="1.0.0",
+        title=config.api_title,
+        version=config.api_version,
         description="Z-profile (and distances) between longitude/latitude points with 15-arcsec resolutions.\n"
-        +
-        # "Data source: GEBCO Compilation Group (2022) GEBCO_2022 Grid (doi:10.5285/e0f0bb80-ab44-2739-e053-6c86abc0289c)",
-        "Data source: GEBCO Compilation Group (2023) GEBCO 2023 Grid (doi:10.5285/f98b053b-0cbc-6c23-e053-6c86abc0af7b)",
+        + "Data source attribution: "
+        + config.api_dataset_attribution,
         routes=app.routes,
     )
-    openapi_schema["servers"] = [{"url": config.host}]
+    if config.api_servers:
+        openapi_schema["servers"] = [{"url": url} for url in config.api_servers]
+    else:
+        openapi_schema.pop("servers", None)
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
@@ -47,7 +57,12 @@ def generate_custom_openapi():
 async def lifespan(app: FastAPI):
     config.ds = xr.open_zarr(
         #'data/GEBCO_2022_sub_ice_topo.zarr', chunks='auto', group='gebco',
-        "data/GEBCO_2023_sub_ice_topo.zarr",
+        # "data/GEBCO_2023_sub_ice_topo.zarr",
+        # Blosc/LZ4 clevel=5 — matches 2023 compressor for read-speed parity.
+        # See dev2026/scripts/benchmark_old_new_api.py for the reasoning.
+        # Path is anchored to this file's directory (see _APP_ROOT above) so
+        # the app works regardless of caller's cwd.
+        str(_APP_ROOT / "data" / "GEBCO_2026_sub_ice_topo.zarr"),
         chunks="auto",
         decode_cf=False,
         decode_times=False,
@@ -133,7 +148,11 @@ def numarr_query_validator(qry):
             return "Format Error"
 
 
-@app.get("/gebco", tags=["Bathymetry"], summary="Get GEBCO(2023) bathymetry")
+@app.get(
+    "/gebco",
+    tags=["Bathymetry"],
+    summary=f"Get GEBCO bathymetry ({config.api_dataset_label})",
+)
 def gebco(
     lon: Optional[str] = Query(
         None,

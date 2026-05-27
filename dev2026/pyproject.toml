@@ -1,0 +1,55 @@
+[project]
+name = "gebco-2026-tools"
+version = "0.1.0"
+description = "Tools to convert GEBCO_2026 NetCDF to Zarr (kept separate from the production gebco_app.py runtime)."
+requires-python = ">=3.13"
+dependencies = [
+    # --- Data-layer stack (offline conversion + Zarr/NetCDF I/O) ----------
+    # zarr is pinned to <3 so the produced .zarr store is on-disk compatible
+    # with the production gebco_app.py runtime (zarr 2.18.6, see ../Pipfile).
+    "xarray>=2025.3.1",
+    "zarr>=2.18,<3",
+    # numcodecs 0.15.x has no cp313 aarch64 wheels — let resolver pick a
+    # later 0.x release. Zlib & Blosc codecs are stable across versions so the
+    # produced Zarr remains readable by the production env (which pins 0.15.1).
+    "numcodecs>=0.15.1",
+    "netCDF4>=1.7.2",
+    "h5netcdf>=1.6.1",  # fallback engine for reading the .nc files
+    "dask[complete]>=2025.3.0",
+    "distributed>=2025.3.0",
+    "numpy>=1.26.4",
+    "rich>=13.9.4",  # nicer terminal diff output for compare_structure.py
+
+    # --- API code-path deps (needed by verify_api_vs_netcdf.py,
+    # compare_old_new_api.py, benchmark_old_new_api.py — they transitively
+    # import src.config / src.zprofile from the production app). Listed here
+    # so `uv sync` produces a self-contained venv that can actually run these
+    # B-phase scripts without piggy-backing on the production Pipenv env.
+    "python-dotenv>=1.0.0",         # src.config
+    "fastapi>=0.115",               # src.zprofile (status, JSONResponse, etc.)
+    "polars>=1.0",                  # src.zprofile
+    "geopy>=2.4",                   # src.zprofile (geodesic)
+    "orjson>=3.10",                 # ORJSONResponse default body class
+    "requests>=2.32",               # only used by gebco_app.py top-level import
+    "httpx>=0.27",                  # required by fastapi.testclient (--with-fastapi)
+    "shapely>=2.0",                 # only reached if --with-fastapi triggers polyhandler import
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.3",
+    "pytest-xdist>=3.6.1",
+]
+
+[tool.uv]
+package = false
+
+# asciitree (zarr-2 transitive dep) ships sdist-only and forgets to declare
+# setuptools as a build requirement, which trips uv's build isolation on
+# Python 3.13. Inject the build dep here.
+[tool.uv.extra-build-dependencies]
+asciitree = ["setuptools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"

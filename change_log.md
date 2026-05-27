@@ -72,3 +72,38 @@
 ###### ver 0.4.0 Stable version with small package upgrade (as numpy remain at v1.26.4)
 
     -- back to numcodecs==0.15.1, which 0.16.0 cause zarr read error cannot import name cbuffer_sizes from numcodecs.blosc
+
+#### ver 0.5.0 Breaking upgrade to GEBCO(2026). Zarr served from Blosc/lz4 for read-speed parity with 2023
+
+    -- Data source: GEBCO_2026 sub_ice grid (doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa)
+    -- Verified 100k points byte-equal between NetCDF and produced Zarr
+    -- 95% of API responses within 102 m of 2023 (P95, max 339 m, no extreme ice-sheet shifts)
+    -- New API median latency 1.01x of 2023 (Blosc/lz4 matches old codec — Zlib was 2.66x slower)
+    -- Add dev2026/ tooling tree (uv + Python 3.13) and AGENTS.md handover notes
+    -- Add /AGENTS.md as the single handover doc for AI coding agents
+    -- Polygon mode (/gebco?jsonsrc=...) regression covered at two levels:
+       full-resolution mask consistency (verify_polygon_meridian.py) and
+       real-polyhandler endpoint regression with production sample=5
+       (verify_polyhandler_endpoint.py) — T1 2304 rows P95=155m,
+       T4 (crosses 180°) 1152 rows P95=195m, both pass on a clean
+       dev2026 `uv sync` env (polars 1.41 + shapely 2.x).
+    -- Deferred to v0.5.1 (migration / housekeeping, not behaviour change):
+       revisit polars pin if needed; pygeos→Shapely 2 migration is tracked
+       separately in specs/v0.5.1_migration_plan.md
+
+#### ver 0.5.1 Runtime/deployment hardening after GEBCO_2026 upgrade
+
+    -- Port src/polyhandler.py from pygeos to native Shapely 2 APIs
+    -- Remove pygeos from production dependency manifests (Pipfile, requirements, root uv env)
+    -- Add root pyproject.toml + uv.lock and migrate production runtime plan to uv-managed .venv
+    -- Verify polygon endpoint regression still passes (T1/T4, sample=5) after the port
+    -- Add CPU-aware Polars installer (polars vs polars-lts-cpu) for mixed-VM deployment
+    -- Add specs/v0.5.1_migration_plan.md and VM37 no-downtime staging/cutover rules
+    -- Cut over VM37 pm2 production to GEBCO_2026 via .stage_v051 root-uv runtime
+
+#### ver 0.5.2 Public metadata/doc cleanup before broader production rollout
+
+    -- Update root README.md attribution/data-source text to the official GEBCO_2026 citation
+    -- Make FastAPI OpenAPI metadata env-driven (API_VERSION, API_SERVERS, GEBCO_DATASET_*)
+    -- Stop advertising localhost in Swagger servers; use public domains only
+    -- Bump public API metadata version to 1.1.0 and sync conf/gebco_v1.json
