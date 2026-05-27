@@ -36,16 +36,17 @@ def generate_custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     openapi_schema = get_openapi(
-        title="ODB API for GEBCO Bathymetry",
-        version="1.0.0",
+        title=config.api_title,
+        version=config.api_version,
         description="Z-profile (and distances) between longitude/latitude points with 15-arcsec resolutions.\n"
-        +
-        # "Data source: GEBCO Compilation Group (2022) GEBCO_2022 Grid (doi:10.5285/e0f0bb80-ab44-2739-e053-6c86abc0289c)",
-        # "Data source: GEBCO Compilation Group (2023) GEBCO 2023 Grid (doi:10.5285/f98b053b-0cbc-6c23-e053-6c86abc0af7b)",
-        "Data source: GEBCO Compilation Group (2026) GEBCO 2026 Grid (doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa)",
+        + "Data source attribution: "
+        + config.api_dataset_attribution,
         routes=app.routes,
     )
-    openapi_schema["servers"] = [{"url": config.host}]
+    if config.api_servers:
+        openapi_schema["servers"] = [{"url": url} for url in config.api_servers]
+    else:
+        openapi_schema.pop("servers", None)
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
@@ -147,7 +148,11 @@ def numarr_query_validator(qry):
             return "Format Error"
 
 
-@app.get("/gebco", tags=["Bathymetry"], summary="Get GEBCO(2026) bathymetry")
+@app.get(
+    "/gebco",
+    tags=["Bathymetry"],
+    summary=f"Get GEBCO bathymetry ({config.api_dataset_label})",
+)
 def gebco(
     lon: Optional[str] = Query(
         None,

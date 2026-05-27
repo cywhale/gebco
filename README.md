@@ -38,15 +38,15 @@
 
 * Data source
 
-    GEBCO Compilation Group (2023) GEBCO 2023 Grid (doi:10.5285/f98b053b-0cbc-6c23-e053-6c86abc0af7b)
+    GEBCO Bathymetric Compilation Group 2026(2026). The GEBCO_2026 Grid - a continuous terrain model for oceans and land at 15 arc-second intervals. NERC EDS British Oceanographic Data Centre NOC. doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa
     
-    https://www.gebco.net/data_and_products/gridded_bathymetry_data/
+    https://www.gebco.net/data-products-gridded-bathymetry-data/gebco2026-grid
 
 #### Citation
 
 * This API is compiled by [Ocean Data Bank](https://www.odb.ntu.edu.tw) (ODB), and can be cited as:
 
-    Ocean Data Bank, National Science and Technology Council, Taiwan. https://doi.org/10.5281/zenodo.7512112. Accessed DAY/MONTH/YEAR from api.odb.ntu.edu.tw/gebco. v1.0.
+    Ocean Data Bank, National Science and Technology Council, Taiwan. https://doi.org/10.5281/zenodo.7512112. Accessed DAY/MONTH/YEAR from api.odb.ntu.edu.tw/gebco. v1.1.0.
 
 
 

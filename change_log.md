@@ -100,3 +100,10 @@
     -- Add CPU-aware Polars installer (polars vs polars-lts-cpu) for mixed-VM deployment
     -- Add specs/v0.5.1_migration_plan.md and VM37 no-downtime staging/cutover rules
     -- Cut over VM37 pm2 production to GEBCO_2026 via .stage_v051 root-uv runtime
+
+#### ver 0.5.2 Public metadata/doc cleanup before broader production rollout
+
+    -- Update root README.md attribution/data-source text to the official GEBCO_2026 citation
+    -- Make FastAPI OpenAPI metadata env-driven (API_VERSION, API_SERVERS, GEBCO_DATASET_*)
+    -- Stop advertising localhost in Swagger servers; use public domains only
+    -- Bump public API metadata version to 1.1.0 and sync conf/gebco_v1.json

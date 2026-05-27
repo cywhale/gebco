@@ -63,6 +63,18 @@ The production app reads the Zarr; the dev2026 tooling writes it. As long as
 the on-disk Zarr is **v2 layout** with a codec the production env has
 (`Blosc/lz4` works in both), versions on either side can drift independently.
 
+OpenAPI/public-doc metadata is now environment-driven in production:
+
+* `API_VERSION` — defaults to `1.1.0`
+* `API_SERVERS` — comma-separated public base URLs, e.g.
+  `https://api.odb.ntu.edu.tw,https://eco.odb.ntu.edu.tw`
+* `GEBCO_DATASET_LABEL` — defaults to `GEBCO_2026 Grid`
+* `GEBCO_DATASET_ATTRIBUTION` — defaults to the official GEBCO_2026 citation
+
+`HOST` is still used elsewhere in the app, but **Swagger/OpenAPI servers no
+longer fall back to localhost**. If `API_SERVERS` is unset, the generated
+OpenAPI omits the `servers` section instead of advertising a local URL.
+
 ## Data sources
 
 The repo ignores `data/` and `data_src/`. Each new GEBCO release goes through:
