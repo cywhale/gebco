@@ -40,12 +40,11 @@ gebco/
 
 ## Branch model
 
-* **main** — long-lived baseline branch. May lag the currently deployed VM
-  during a staged rollout; don't assume `main` is what production is serving.
-* **gebco_2026_api** — upgrade branch for GEBCO_2026 and the current VM37
-  deployment source as of `2026-05-26`. **Do not delete after merge** until at
-  least one full GEBCO release cycle (it's the only place the conversion
-  recipe is captured outside the changelog).
+* **main** — current production branch again as of `2026-05-27` (VM37 has been
+  normalised back from staging checkout to the root repo on `main`).
+* **gebco_2026_api** — upgrade branch used to develop and stage the GEBCO_2026
+  rollout before merge. Keep it until at least one full GEBCO release cycle
+  because it captures the conversion/review history in a linear branch.
 * Historical: `dev/` keeps the 2022→2023 Jupyter record as-is. Don't port it
   forward; mirror the pattern in `dev2026/` (new dir per data-version bump).
 
@@ -221,12 +220,12 @@ Used for 2026; reuse for 2027+.
 * `decode_cf=False` everywhere on read — z is raw int16 from the grid. Don't
   let xarray rescale or fillna; the production code assumes raw integers.
 
-## Current deploy reality (VM37, 2026-05-26)
+## Current deploy reality (VM37, 2026-05-27)
 
 VM37 production is currently served from:
 
-* checkout: `/home/odbadmin/python/gebco/.stage_v051`
-* branch: `gebco_2026_api`
+* checkout: `/home/odbadmin/python/gebco`
+* branch: `main`
 * runtime: root `.venv` built by `uv sync --python 3.11`
 * polygon dependency: installed post-sync via
   `./scripts/install_polars_variant.sh auto`
@@ -242,15 +241,17 @@ pm2 describe gebco | egrep 'exec cwd|script path|script args|revision|branch'
 
 Expected signals for the new deployment:
 
-* `exec cwd` points at `.stage_v051`
+* `exec cwd` points at `/home/odbadmin/python/gebco`
 * `script args` contains `./.venv/bin/gunicorn`
-* `branch` is `gebco_2026_api`
+* `branch` is `main`
 * point smoke:
   `curl -sk --get 'https://127.0.0.1:8013/gebco' --data-urlencode 'lon=122.36' --data-urlencode 'lat=25.02' --data-urlencode 'mode=point'`
   returns `z=-1173`
 
-If you still see `/home/odbadmin/.pyenv/.../gunicorn` or repo root
-`/home/odbadmin/python/gebco` as cwd, you're looking at the legacy runtime.
+If you see `.stage_v051` in `exec cwd`, you're looking at the historical
+staging checkout used during the cutover window on `2026-05-26`. If you still
+see `/home/odbadmin/.pyenv/.../gunicorn`, you're looking at the pre-v0.5.1
+legacy runtime.
 
 ## Where to ask "what did the last agent do?"
 

@@ -347,7 +347,8 @@ PY
 ```
 
 VM37 staging was verified this way on `2026-05-26` without restarting `pm2`
-or touching `127.0.0.1:8013`.
+or touching `127.0.0.1:8013`. After acceptance, production was normalised
+back to the root checkout on `main` (`~/python/gebco`) on `2026-05-27`.
 
 ### Confirm which gebco pm2 is running
 
@@ -357,11 +358,13 @@ On VM37, the quickest check is:
 pm2 describe gebco | egrep 'exec cwd|script path|script args|revision|branch'
 ```
 
-If cutover is on the GEBCO_2026 runtime, expect:
+If current production has already been normalised after cutover, expect:
 
-* `exec cwd` under `~/python/gebco/.stage_v051`
+* `exec cwd` under `~/python/gebco`
 * `script args` containing `./.venv/bin/gunicorn`
-* `branch = gebco_2026_api`
+* `branch = main`
 
-That combination tells you `pm2` is serving the new root-`uv` environment,
-not the legacy `main` checkout / old pyenv-based gunicorn.
+If you instead see `.stage_v051`, you're looking at the temporary staging
+checkout used during the GEBCO_2026 cutover. In either case, seeing
+`./.venv/bin/gunicorn` means `pm2` is serving the new root-`uv` runtime, not
+the legacy pyenv-based gunicorn.

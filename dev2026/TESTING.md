@@ -537,8 +537,32 @@ Verification after cutover:
 | Public endpoint | `https://api.odb.ntu.edu.tw/gebco?lon=122.36&lat=25.02&mode=point` → HTTP 200, `z=-1173` |
 | Process persistence | `pm2 save` completed successfully |
 
-This is the final acceptance point for v0.5.1 on VM37: production serves the
-new GEBCO_2026 dataset through the root-`uv` runtime and pm2-managed gunicorn.
+This was the first production acceptance point for v0.5.1 on VM37: the new
+GEBCO_2026 dataset was serving through the root-`uv` runtime and pm2-managed
+gunicorn, but still from the temporary staging checkout.
+
+### D4. VM37 post-merge normalisation (2026-05-27)
+
+After `gebco_2026_api` was merged to `main`, VM37 production was moved from the
+temporary staging checkout back to the root repo:
+
+1. `~/python/gebco` was updated to `origin/main`
+2. root `.venv` was synced again and `polars-lts-cpu` reinstalled via the
+   helper
+3. `pm2 gebco` was restarted from `~/python/gebco`
+4. `.env` in the repo root was used to publish `API_SERVERS=https://api.odb.ntu.edu.tw`
+
+Verification after the normalisation:
+
+| Check | Result |
+|------|--------|
+| `pm2 describe gebco` | `exec cwd=/home/odbadmin/python/gebco`, `branch=main`, `revision=c530d01...` |
+| VM37 loopback | `https://127.0.0.1:8013/gebco?lon=122.36&lat=25.02&mode=point` → `z=-1173` |
+| Public endpoint | `https://api.odb.ntu.edu.tw/gebco?lon=122.36&lat=25.02&mode=point` → HTTP 200, `z=-1173` |
+| Public OpenAPI server | `/gebco/openapi.json` contains `https://api.odb.ntu.edu.tw` |
+
+This is the current production state after merge: VM37 serves GEBCO_2026 from
+the root checkout on `main`, not from `.stage_v051`.
 
 
 
