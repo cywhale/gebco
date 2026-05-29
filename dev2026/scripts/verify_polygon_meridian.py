@@ -251,8 +251,29 @@ CASE_T6_LINE_X180 = {
     "lats": [-10.0, -10.0, -10.0, -10.0],
 }
 
+# v0.5.4 T7 — Phase D2 cross180_thin archetype. The original D2 probe
+# measured this shape at ~4.65e7 raw bbox cells / 112 s / 8.3 GB RSS on
+# the v0.5.3 polygon implementation; v0.5.4 W2-B redesigns
+# `process_polygon_part` to row-batch the mask so this case must remain
+# correct (byte-equal cell coords + z|Δ| in band) AND become operationally
+# cheap. Polyhandler is bypassed here (mask-consistency layer); the real
+# endpoint regression for the redesigned implementation lives in
+# `verify_polyhandler_endpoint.py` once the user adds the matching case.
+CASE_T7_CROSS180_THIN = {
+    "id": "T7",
+    "kind": "polygon",
+    "label": "Polygon — cross-180 thin ribbon (D2 archetype)",
+    "geojson": {
+        "type": "Polygon",
+        "coordinates": [[[179.5, -0.025], [179.5, 0.025],
+                          [-179.5, 0.025], [-179.5, -0.025],
+                          [179.5, -0.025]]],
+    },
+}
+
 ALL_CASES = [CASE_T1_TAIWAN_POLY, CASE_T2_GREENLAND_POLY, CASE_T3_FEATCOL,
-             CASE_T4_X180_POLY, CASE_T5_LINE_X0, CASE_T6_LINE_X180]
+             CASE_T4_X180_POLY, CASE_T5_LINE_X0, CASE_T6_LINE_X180,
+             CASE_T7_CROSS180_THIN]
 
 
 # --- runner ----------------------------------------------------------------

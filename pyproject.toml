@@ -1,6 +1,6 @@
 [project]
 name = "gebco-api"
-version = "0.5.1"
+version = "0.5.3"
 description = "Production runtime for the GEBCO bathymetry FastAPI service."
 requires-python = ">=3.11,<3.12"
 dependencies = [
@@ -14,6 +14,10 @@ dependencies = [
     "orjson==3.10.16",
     "pyarrow==19.0.1",
     "python-dotenv==1.1.0",
+    # pyproj is the v0.5.4 H9 fast-distance backend (74x faster than
+    # geopy.geodesic per call, byte-equal numerical output via the same
+    # WGS84/Karney geographiclib internals). See src/zprofile._seg_km.
+    "pyproj>=3.6,<4",
     "requests==2.32.3",
     "setuptools==78.1.0",
     "shapely==2.0.7",
@@ -24,3 +28,16 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+# v0.5.3 hardening: unit tests for src/ legacy modules live in top-level tests/.
+# Run with `uv run --group dev pytest tests/ -q` (after the polars wheel is
+# installed via scripts/install_polars_variant.sh on Linux production targets).
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-mock>=3.14",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"

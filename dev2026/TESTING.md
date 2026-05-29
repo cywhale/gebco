@@ -626,3 +626,352 @@ re-run the same way; see Phase A above.
   See the environment table above for the reason. Re-running the suite on a
   Mac with the canonical versions should reproduce identical numerical results
   (the Zarr was written with `zarr_format=2` and lossless codecs).
+
+---
+
+## v0.5.3 Hardening — Phase D / E / F
+
+These three phases were added on the v0.5.3 hardening branch and stand
+alongside the v0.5.0 phases. They cover bbox sizing, dask-pool ablation,
+and the np.append → list speedup (deferred).
+
+### Phase D — bbox sizing probe (informs `MAX_BBOX_CELLS_LINE` / `MAX_POLYGON_CELLS`)
+
+**Reproducer (on Mac, canonical 2026 Zarr present):**
+
+```bash
+cd ~/proj/gebco/dev2026
+uv sync --group dev   # idempotent
+uv run python scripts/probe_bbox_limits.py
+```
+
+The script measures wall time + peak RSS delta for both the line/point
+materialise path (`ds.sel(...).elevation.values`) and the polygon path
+(`meshgrid → shapely.points → shapely.contains` mask + masked
+`elevation`) at increasing bbox cell counts.
+
+Mac run completed on the canonical 2026 Zarr. One important observation:
+the polygon path crosses the heuristic threshold extremely early. By
+`1e7` raw bbox cells it already exceeded both the `2.0 s` and `1200 MB`
+polygon limits, and by `5e7` raw cells the probe hit ~10 GB RSS. That
+means the heuristic in the spec is much stricter than the current
+frontend "1M rows" expectation for thin polygons; treat the numbers
+below as a risk signal, not as an automatic instruction to lower the
+production cap to `1e7`.
+
+Measured table:
+
+| target raw cells | side (°) | line cells | line s | line RSS MB | poly cells | poly s | poly RSS MB |
+|------------------|----------|------------|--------|-------------|------------|--------|-------------|
+| 1e5              | 1.318    | 99,856     | 0.133  | 23.2        | 99,856     | 0.044  | 23.2        |
+| 1e6              | 4.167    | 1,000,000  | 0.008  | 8.1         | 1,000,000  | 0.412  | 221.1       |
+| 1e7              | 13.176   | 9,998,244  | 0.015  | 93.4        | 9,998,244  | 3.262  | 2,225.7     |
+| 5e7              | 29.463   | 50,013,184 | 0.027  | 259.1       | 50,013,184 | 14.037 | 10,379.9    |
+| 1e8              | 41.667   | 100,000,000| 0.160  | 494.2       | not run    | n/a    | n/a         |
+| 2.5e8            | 65.881   | 238,476,584| 0.091  | 283.8       | not run    | n/a    | n/a         |
+| 5e8              | 93.169   | 410,440,160| 0.145  | 349.8       | not run    | n/a    | n/a         |
+
+Cap-picking heuristic (from `specs/v0.5.3_hardening_checklist_v2.md` §3):
+* `MAX_BBOX_CELLS_LINE` = lowest cell count where line_s > 1.0 s OR line_RSS > 800 MB.
+* `MAX_POLYGON_CELLS`   = lowest cell count where poly_s > 2.0 s OR poly_RSS > 1200 MB.
+
+Observed from this run:
+* The line-path heuristic was not hit even at the largest tested square
+  bbox; current fallback `MAX_BBOX_CELLS_LINE=2e8` remains conservative.
+* The polygon-path heuristic would point to `MAX_POLYGON_CELLS≈1e7`,
+  but that directly conflicts with the spec's requirement to keep large
+  thin frontend polygons working. Do not lower the polygon cap solely
+  from this square-bbox probe; reconcile it against the real frontend
+  archetypes before changing the production default.
+
+### Phase D2 — polygon cap probe for frontend-like shapes
+
+Phase D2 was added specifically because `frontend rows` and
+`raw_bbox_cells` are different quantities. The script probes a few
+frontend-like polygon archetypes and records only scalar metrics:
+`raw_bbox_cells`, `mask_ratio`, estimated rows after `sample=5`,
+wall-time, and RSS delta.
+
+**Reproducer (on Mac, canonical 2026 Zarr present):**
+
+```bash
+cd ~/proj/gebco
+./.venv/bin/python dev2026/scripts/probe_polygon_cap_shapes.py
+```
+
+Measured summary:
+
+| shape | safe up to raw cells | first bad raw cells | mask ratio at knee | est. rows at knee (`sample=5`) | limiting factor |
+|-------|----------------------|---------------------|--------------------|-------------------------------:|-----------------|
+| dense_rect | 6,728,836 | 7,333,264 | 1.000 | 293,331 | rss/time |
+| thin_rect (diagonal ribbon) | none | 1,052,676 | 0.048 | 2,041 | time |
+| coastal (jagged) | none | 999,600 | 0.874 | 34,964 | time |
+| cross180_thin | none | 46,497,188 | 0.071 | 131,965 | rss/time |
+
+Key takeaway:
+
+* `frontend rows` is **not** a safe proxy for backend polygon cost.
+* The diagonal-ribbon thin polygon crossed the `2.0 s` threshold at only
+  ~`1.05e6` raw bbox cells while estimating just ~`2k` returned rows
+  after `sample=5`.
+* The cross-180 thin case was much worse: ~`4.65e7` raw bbox cells,
+  mask ratio only `0.071`, estimated rows only ~`132k`, yet the split +
+  mask path took `112 s` and ~`8.3 GB` RSS.
+
+Interpretation:
+
+* The Phase D square-bbox result (`~1e7`) was **not** just pessimism.
+* Large sparse polygons can still be backend-expensive because the
+  current implementation allocates arrays over the full bbox before the
+  mask eliminates most cells.
+* Therefore the existing frontend "1M rows" expectation must **not** be
+  used to justify a large `MAX_POLYGON_CELLS` default.
+
+### Phase E — dask multiprocessing pool ablation (`GEBCO_DASK_POOL_SIZE`)
+
+**v0.5.3 ships with the env knob only**; default `4` preserves v0.5.2
+behaviour byte-for-byte. The flip to `0` (off) is a separate small
+follow-up commit gated on these two stages.
+
+#### Stage A — dev2026 micro-benchmark
+
+```bash
+cd ~/proj/gebco/dev2026
+GEBCO_DASK_POOL_SIZE=4 uv run python scripts/benchmark_old_new_api.py --n 400 --warmup 20 --seed 42
+GEBCO_DASK_POOL_SIZE=0 uv run python scripts/benchmark_old_new_api.py --n 400 --warmup 20 --seed 42
+```
+
+Mac micro-benchmark results:
+
+* `GEBCO_DASK_POOL_SIZE=4`
+  * OLD median `2.41 ms`, P95 `4.10 ms`
+  * NEW median `2.40 ms`, P95 `4.11 ms`
+* `GEBCO_DASK_POOL_SIZE=0`
+  * OLD median `2.40 ms`, P95 `3.76 ms`
+  * NEW median `2.38 ms`, P95 `3.48 ms`
+* NEW median ratio `(off / on)` = `0.99×`
+* NEW P95 delta `(off - on)` = `-0.63 ms`
+
+Method caveat: `benchmark_old_new_api.py` measures the direct
+`src.zprofile.zprofile()` point path, not the full FastAPI import path
+that configures the dask pool in `gebco_app.py`. So Stage A is useful as
+an upper-bound sanity check, but Stage B soak on VM37 remains the real
+decision gate for changing the default.
+
+#### Stage B — VM37 staging soak
+
+Plan: run with `GEBCO_DASK_POOL_SIZE=4` for one week, capture PM2
+latency + RSS baseline; switch to `GEBCO_DASK_POOL_SIZE=0` for one week
+and compare. Decision rule: flip default to `0` if both stages within
+5 % P95.
+
+### Phase F — long-polyline benchmark (v0.5.4 W1 / H9)
+
+H9 (`np.append` → list accumulation in `src/zprofile.py` +
+`src/xmeridian.py`, ~70 call sites) lands in v0.5.4 PR1 together with
+the H13 follow-up (`gebco_app.py` consumes a polars DataFrame from
+zprofile in dataframe mode internally — no JSON round-trip for the
+request log row count).
+
+**Reproducer (run on Mac, canonical 2026 Zarr present):**
+
+```bash
+cd ~/proj/gebco
+
+# Sparse mode — 2-vertex line spanning 20° (the asymptotic H9 regime).
+# Exercises the inner cell-walk loop with ~4800 nested-loop iterations
+# per segment; this is where the v0.5.3 np.append cost was O(n²).
+uv run python dev2026/scripts/benchmark_long_polyline.py \
+    --style sparse --span-deg 20 --warmup 2 --trials 5 --seed 2026
+
+# Dense mode — 5000 input vertices over a small span. Every segment is
+# sub-cell so the inner loop is skipped; H9 only affects segment-level
+# appends. Expected speedup is modest (~1.2–1.5×) because numpy
+# realloc on small growing arrays is well-amortised by the allocator.
+uv run python dev2026/scripts/benchmark_long_polyline.py \
+    --style dense --n 5000 --warmup 2 --trials 5 --seed 2026
+```
+
+Acceptance (v0.5.4 plan §8 / §12, final Mac run):
+
+* **sparse-style total wall ≥ 3×** vs v0.5.3 baseline
+* **dense-style total wall ≥ 3×** vs v0.5.3 baseline
+* decomposition profile on the final branch should still show that the
+  remaining wall is mostly Zarr/xarray rather than the H9 inner loop
+* no regression on single-point latency
+* `verify_polygon_meridian.py` T5/T6 numbers byte-equal across the
+  H9 + pyproj swap (pyproj.Geod.inv numerical output matches geopy to
+  3.6 pm — both use WGS84/Karney geographiclib internally)
+
+Final decomposition snapshot (post-fix branch):
+
+  `profile_sparse_polyline.py` on the final branch reports:
+  `crossBoundary 0.02 ms`, `ds_sel 0.58 ms`, `values_materialise 13.98 ms`,
+  `inner_walk 4.96 ms`, `buffers_to_array 0.98 ms` per call
+  (timed total `20.52 ms`). So after H9 lands, the remaining wall is
+  indeed mostly the Zarr materialisation stage. That decomposition is
+  now a description of the *post-fix* bottleneck, not a reason to relax
+  the total-wall target: the final Mac benchmark exceeds the original
+  ≥3× goal by a large margin.
+
+Reproducer for the decomposition (run on Mac, real Zarr):
+
+```bash
+cd ~/proj/gebco
+uv run python dev2026/scripts/profile_sparse_polyline.py \
+    --span-deg 20 --trials 5
+```
+
+| style  | param        | impl   | median ms | P95 ms | RSS Δ MB |
+|--------|--------------|--------|-----------|--------|----------|
+| sparse | span=20°     | v0.5.3 |   206.26  | 207.20 |   30.2   |
+| sparse | span=20°     | v0.5.4 |    22.94  |  23.00 |   25.8   |
+| dense  | n=5000       | v0.5.3 |   237.44  | 242.01 |    0.3   |
+| dense  | n=5000       | v0.5.4 |    15.71  |  15.98 |    0.2   |
+
+Derived total-wall speedups on Mac:
+
+* sparse: `206.26 / 22.94 = 8.99×`
+* dense:  `237.44 / 15.71 = 15.11×`
+
+H13 follow-up check: `verify_polyhandler_endpoint.py` row counts
+unchanged across the dataframe-mode switch in `gebco_app.py` (the
+handler now reads `df.height` instead of decoding the response body).
+
+### Phase G — polygon redesign benchmark (v0.5.4 W2-B)
+
+W2-B redesigns `src.polyhandler.process_polygon_part`:
+
+1. **Cell-budget batching** — `GEBCO_POLYGON_BATCH_CELLS` (default
+   `1_000_000`) caps per-batch cells regardless of bbox aspect.
+   `batch_lats = max(1, BATCH_CELLS // n_lons)`.
+2. **`shapely.contains_xy`** instead of `shapely.points + shapely.contains`
+   — vectorises into GEOS directly from numpy arrays without one Python
+   `Point` object per cell. Round-3 sandbox measurement on a 1M-point
+   batch: 29.5 ms vs 358.6 ms (~12× faster), byte-equal mask output,
+   and ~10× less RSS per batch.
+3. **`gc.collect()` per batch** — `del` alone doesn't always trigger
+   immediate cycle collection on GEOS / numpy internals; forcing
+   `gc.collect()` after each batch keeps peak RSS bounded to one
+   batch's working set. Without this, ~24 batches' worth of shapely
+   temporaries accumulated to ~2 GB on the D2 cross180_thin case
+   (codex measured 2172 MB RSS pre-round-3).
+
+> **Sample-aware reality check.** At the production endpoint default
+> (`sample=5`) the strided bbox is 25× smaller than at `sample=1`, so
+> the W2-B fragmentation often doesn't bite — small / coastal /
+> dense-rect archetypes still fit in one batch and W2-B is effectively
+> a no-op. The win is most pronounced for the D2 cross180_thin case at
+> `sample=1` (raw bbox 46 M cells → ~24 batches per half instead of
+> 1). That's why `benchmark_polygon_shapes.py` defaults to `--sample 1`
+> — it measures the worst-case path the plan §12 acceptance numbers
+> were derived from.
+
+#### G.0 cProfile snapshot (pre-W2-B) — MUST land before PR2
+
+The v0.5.4 plan §5 pre-work paragraph requires capturing where the v0.5.3
+112 s for `cross180_thin` actually goes (shapely.points vs
+shapely.contains vs meshgrid vs DataFrame build) before the redesign
+ships. This sets the reviewer's expectation for whether W2-B should
+improve wall time, RSS, or both.
+
+```bash
+# Run on Mac. Do NOT run inside the sandbox — 8 GB RSS will OOM.
+cd ~/proj/gebco
+uv run python dev2026/scripts/profile_cross180_thin.py \
+    --width 25
+```
+
+| rank | function                                       | cum %  |
+|------|------------------------------------------------|--------|
+| 1    | `src.polyhandler.polyhandler`                  | ~100%  |
+| 2    | `src.polyhandler.process_polygon`              | ~100%  |
+| 3    | `src.polyhandler.process_polygon_part`         |  ~91%  |
+| 4    | `xarray.DataArray.values` / `Variable.values`  |  ~73%  |
+| 5    | `dask.array.__array__` / `dask.base.compute`   |  ~73%  |
+
+Note: after fixing the profiling script to exclude import/open overhead,
+the pre-W2-B `sample=5` snapshot is small enough that the hottest frames
+are the actual polygon call stack plus xarray/dask materialisation. The
+very large `sample=1` failure mode is quantified by Phase D2 and G.1.
+
+#### G.1 P-Bench-2 archetype benchmark — before / after
+
+```bash
+cd ~/proj/gebco
+uv run python dev2026/scripts/benchmark_polygon_shapes.py --trials 3
+```
+
+The script enforces the v0.5.4 plan §12 acceptance thresholds; if any
+archetype median exceeds, the script returns non-zero and prints which.
+
+| archetype     | impl       | rows | median s | P95 s | RSS Δ MB | verdict |
+|---------------|------------|------|----------|-------|----------|---------|
+| thin_ribbon   | v0.5.3     | 54358 |  2.988  | 2.988 |  180.3   | FAIL    |
+| thin_ribbon   | v0.5.4 W2B | 54358 |  0.121  | 0.122 |    5.8   | PASS    |
+| coastal       | v0.5.3     | 873191 | 3.288  | 3.288 |  204.9   | FAIL    |
+| coastal       | v0.5.4 W2B | 873191 | 0.127  | 0.129 |   51.8   | PASS    |
+| cross180_thin | v0.5.3     | 3299125 | 114.477 | 114.477 | 6304.0 | FAIL |
+| cross180_thin | v0.5.4 W2B | 3299125 | 4.115 | 4.129 | 203.6 | PASS |
+
+Acceptance (v0.5.4 plan §12):
+
+* `thin_ribbon`   median ≤ 0.5 s
+* `coastal`       median ≤ 1.5 s
+* `cross180_thin` median ≤ 30 s AND RSS Δ ≤ 2000 MB
+
+#### G.2 T7 cross-180 thin regression
+
+```bash
+uv run python dev2026/scripts/verify_polygon_meridian.py
+```
+
+T7 was added in v0.5.4 (covers the D2 cross180_thin geometry).
+Acceptance: identical row count + identical cell coordinates between
+2023 and 2026, z|Δ| P95 within the same band as T1–T6.
+
+| Case | Label                                 | n cells | exact | P50 | P95 | P99 | max | verdict |
+|------|---------------------------------------|---------|-------|-----|-----|-----|-----|---------|
+| T7   | Polygon — cross-180 thin (D2 archetype) | 2880 | 407 | 3 | 16 | 33 | 88 | PASS |
+
+### Phase H — `MAX_POLYGON_CELLS` revisit after PR2
+
+Per v0.5.4 plan §6 PR3 derived target:
+
+> if post-W2 `cross180_thin` at ~5e7 raw bbox cells is under
+> `5.0 s / 1 GB RSS`, `MAX_POLYGON_CELLS` should be re-evaluated in the
+> `5e7–1e8` range instead of left at `2e9`.
+
+Decision (Mac final run):
+
+* `cross180_thin` at the D2-sized benchmark now lands at `4.115 s /
+  203.6 MB`, comfortably under the derived `5.0 s / 1 GB RSS` target.
+* Therefore `GEBCO_MAX_POLYGON_CELLS` can be tightened from the
+  provisional `2e9` to **`5e7`** by default.
+* The env knob remains overrideable for operational tuning, but the
+  default is now a real guard rather than a dormant placeholder.
+
+---
+
+## v0.5.3 Hardening — sandbox unit-test run (this branch)
+
+Run on the Linux sandbox where polars-lts-cpu can't reliably install
+(35 MB download keeps timing out). Excludes the four polars-dependent
+test files; those run on a Mac.
+
+```bash
+.venv/bin/python -m pytest \
+    tests/test_modes.py tests/test_validation.py tests/test_lon360_input.py \
+    tests/test_jsonsrc.py tests/test_logger_lifecycle.py tests/test_xmeridian.py \
+    -p no:cacheprovider --basetemp=/tmp/pytt
+# 64 passed, 4 warnings in 0.15s
+```
+
+On Mac (with polars present), the full suite is:
+
+```bash
+cd ~/proj/gebco
+uv run --group dev pytest tests/ -q
+# expected: 100+ passed (modes / validation / lon360 / jsonsrc / logger /
+#           xmeridian / zprofile / polyhandler / bbox_guard)
+```

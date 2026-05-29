@@ -1,3 +1,4 @@
+import gc
 import polars as pl
 import numpy as np
 import json
@@ -7,6 +8,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import split
 from src.zprofile import zprofile, zdata_bbox
 from src.xmeridian import whichSide
+from src.modes import parse_modes
 import src.config as config
 
 
@@ -71,32 +73,125 @@ def process_linestring(line, line_id, mode, sample):
 def process_polygon_part(
     polygon, line_id, mode, crosses_180=False, isRight=False, poly_sample=5
 ):
+    """Build the per-cell DataFrame for a polygon (or polygon half on
+    cross-180 splits).
+
+    v0.5.4 W2-B — instead of one ``meshgrid + shapely.points + contains``
+    call over the entire strided bbox (which forced peak RSS to scale
+    with the bbox and made the cross-180 thin case allocate ~8 GB for
+    only ~132k output rows — see ``dev2026/TESTING.md`` Phase D2), we now
+    process the bbox in latitude-row batches of size
+    ``GEBCO_POLYGON_ROW_BATCH`` (default 5000). Each batch builds its own
+    meshgrid + shapely points + contains mask, harvests the matched
+    cells into output buffers, then frees the per-batch temporaries.
+
+    Semantics are byte-equal to v0.5.3:
+      * the cells selected are exactly those whose centres fall inside
+        ``trans_poly`` (``shapely.contains`` is run on each cell centre
+        independently, same as before);
+      * lon360 normalisation, sort order, and ``lineid`` / ``distance``
+        columns are applied after concatenation, so column shape /
+        dtype match v0.5.3 exactly;
+      * empty polygons (zero matches) return the same empty-schema
+        DataFrame the legacy code produced after sort.
+    """
+    # v0.5.3 H4: cache parsed mode tokens once per call.
+    _modes = parse_modes(mode)
     if crosses_180:
         trans_coords = transform_back_to_180(polygon.exterior.coords, isRight)
     else:
         trans_coords = transform_back_to_180(shapely.get_coordinates(polygon), isRight)
     trans_poly = Polygon(trans_coords)
+    shapely.prepare(trans_poly)
     minx, miny, maxx, maxy = shapely.bounds(trans_poly)
     subset_data = zdata_bbox(
         (minx, miny, maxx, maxy), crosses_180, isRight, poly_sample
     )
 
-    # Create a mask for data points within the polygon
-    lons, lats = np.meshgrid(subset_data.lon, subset_data.lat)
-    points = shapely.points(lons.ravel(), lats.ravel())
-    mask = shapely.contains(trans_poly, points)
-    mask_reshaped = mask.reshape(lats.shape)
+    # v0.5.4 W2-B: read coords + elevation values once; the elevation
+    # array is the bbox slice from the Zarr (already strided by
+    # poly_sample), so this materialises only the bbox once instead of
+    # once per batch.
+    lon_vals = subset_data.lon.values
+    lat_vals = subset_data.lat.values
+    elev_vals = subset_data.elevation.values
+    n_lats = lat_vals.size
+    n_lons = lon_vals.size
 
-    # Apply mask and create DataFrame
-    elevation_data = subset_data.elevation.values[mask_reshaped]
-    masked_lons, masked_lats = lons[mask_reshaped], lats[mask_reshaped]
+    # Output buffers — each entry contains the matched cells from one
+    # row-batch. We use lists of ndarrays + np.concatenate at the end so
+    # peak RSS during accumulation is bounded by the buffers, not the
+    # whole bbox.
+    lon_chunks: list = []
+    lat_chunks: list = []
+    z_chunks: list = []
+
+    # v0.5.4 W2-B — cell-budget batching. ``POLYGON_BATCH_CELLS`` caps
+    # the per-batch cell count regardless of the bbox aspect ratio, so
+    # thin polygons (e.g. D2 cross180_thin's 14.2°×28.4° half-bbox)
+    # actually get fragmented instead of fitting in one giant batch.
+    # ``GEBCO_POLYGON_BATCH_CELLS == 0`` disables batching entirely
+    # (matches the v0.5.3 single-meshgrid behaviour for A/B comparison).
+    batch_cells = config.POLYGON_BATCH_CELLS
+    if batch_cells <= 0 or n_lons == 0:
+        batch_lats = n_lats if n_lats else 1
+    else:
+        batch_lats = max(1, batch_cells // n_lons)
+
+    for row_start in range(0, n_lats, batch_lats):
+        row_end = min(row_start + batch_lats, n_lats)
+        chunk_lats = lat_vals[row_start:row_end]
+        # Cheap bbox prefilter on latitude — if the polygon's lat extent
+        # doesn't intersect this row batch, skip it entirely without
+        # building any shapely objects.
+        if chunk_lats.max() < miny or chunk_lats.min() > maxy:
+            continue
+        chunk_lon_mesh, chunk_lat_mesh = np.meshgrid(lon_vals, chunk_lats)
+        # v0.5.4 W2-B round 3 — `shapely.contains_xy(geom, x_array, y_array)`
+        # vectorises into GEOS directly from numpy arrays without
+        # constructing one ``shapely.Point`` per cell. For a 1M-cell
+        # batch this is ~12x faster than `shapely.points + shapely.contains`
+        # AND drops the per-batch RSS spike from ~80 MB of Point PyObjects
+        # to ~8 MB of mask + meshgrid scratch. Output is byte-equal to
+        # the pre-round-3 mask (verified on a 1M-point uniform sample).
+        flat_lon = chunk_lon_mesh.ravel()
+        flat_lat = chunk_lat_mesh.ravel()
+        mask = shapely.contains_xy(trans_poly, flat_lon, flat_lat)
+        if not mask.any():
+            del chunk_lon_mesh, chunk_lat_mesh, flat_lon, flat_lat, mask
+            gc.collect()
+            continue
+        mask_2d = mask.reshape(chunk_lon_mesh.shape)
+        # Harvest matched cells. elev_vals[row_start:row_end] is itself a
+        # view into the bbox-resolved numpy array, so no extra copy here.
+        z_chunks.append(elev_vals[row_start:row_end][mask_2d])
+        lon_chunks.append(chunk_lon_mesh[mask_2d])
+        lat_chunks.append(chunk_lat_mesh[mask_2d])
+        # explicit del + gc.collect — del alone removes refs but doesn't
+        # always trigger immediate cycle collection on the GEOS / numpy
+        # internals. Forcing gc.collect() per batch keeps peak RSS bounded
+        # to one batch worth of scratch, which is the whole point of W2-B.
+        del chunk_lon_mesh, chunk_lat_mesh, mask, mask_2d, flat_lon, flat_lat
+        gc.collect()
+
+    if lon_chunks:
+        masked_lons = np.concatenate(lon_chunks)
+        masked_lats = np.concatenate(lat_chunks)
+        elevation_data = np.concatenate(z_chunks)
+    else:
+        # Match the legacy empty-bbox dtype / shape exactly so the
+        # downstream pl.DataFrame builds an empty frame with the same
+        # column schema rather than raising.
+        masked_lons = np.empty((0,), dtype=lon_vals.dtype)
+        masked_lats = np.empty((0,), dtype=lat_vals.dtype)
+        elevation_data = np.empty((0,), dtype=elev_vals.dtype)
 
     # Transform longitude to 0-360 range if 'lon360' is in mode
-    if crosses_180 and "lon360" in mode:
+    if crosses_180 and "lon360" in _modes:
         masked_lons = np.where(masked_lons < 0, masked_lons + 360, masked_lons)
 
     # Adjust sorting order
-    sort_descending = [crosses_180 and "lon360" not in mode, True]
+    sort_descending = [crosses_180 and "lon360" not in _modes, True]
 
     df = pl.DataFrame(
         {
@@ -108,20 +203,21 @@ def process_polygon_part(
 
     # Conditionally include "lineid" only if "lineid" mode is enabled
     append_cols = []
-    if "lineid" in mode:
+    if "lineid" in _modes:
         append_cols.append(pl.lit(line_id).cast(pl.Int16).alias("lineid"))
 
     # Add distance column if not in "zonly" mode
-    if "zonly" not in mode:
+    if "zonly" not in _modes:
         append_cols.append(pl.lit(None).cast(pl.Float64).alias("distance"))
 
     if append_cols:
-        df = df.with_columns(append_cols)    
+        df = df.with_columns(append_cols)
 
     return df
 
 
 def process_polygon(polygon, line_id, mode, poly_sample):
+    _modes = parse_modes(mode)  # v0.5.3 H4
     minx, miny, maxx, maxy = shapely.bounds(polygon)
     # crosses_180 = minx < -170 and maxx > 170
     crosses_180 = whichSide([minx], [maxx]) == "away-zero"
@@ -145,18 +241,20 @@ def process_polygon(polygon, line_id, mode, poly_sample):
                 left_df = df
         # df = pl.concat(dataframes)
         # Determine the order of concatenation based on mode
-        if "lon360" in mode:
-            df = (
-                pl.concat([right_df, left_df])
-                if right_df is not None and left_df is not None
-                else (right_df or left_df)
-            )
+        if "lon360" in _modes:
+            if right_df is not None and left_df is not None:
+                df = pl.concat([right_df, left_df])
+            elif right_df is not None:
+                df = right_df
+            else:
+                df = left_df
         else:
-            df = (
-                pl.concat([left_df, right_df])
-                if right_df is not None and left_df is not None
-                else (right_df or left_df)
-            )
+            if right_df is not None and left_df is not None:
+                df = pl.concat([left_df, right_df])
+            elif left_df is not None:
+                df = left_df
+            else:
+                df = right_df
     else:
         df = process_polygon_part(polygon, line_id, mode, False, False, poly_sample)
 
@@ -166,11 +264,13 @@ def process_polygon(polygon, line_id, mode, poly_sample):
 def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
     dataframes = []
     hasFeature = False
-    mode = (
-        "dataframe"
-        if mode is None or mode == ""
-        else (mode if "dataframe" in mode else mode + ",dataframe")
-    )
+    # v0.5.3 H4: ensure "dataframe" is in the mode string using set membership;
+    # `mode` stays a string because it's passed through to internal calls and
+    # recursive polyhandler() invocations that downstream parse_modes() again.
+    _modes = parse_modes(mode)
+    if "dataframe" not in _modes:
+        mode = "dataframe" if not mode else mode + ",dataframe"
+        _modes = parse_modes(mode)
 
     # Define schema dynamically based on "lineid" mode
     consistent_schema = {
@@ -178,11 +278,11 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
         "latitude": pl.Float64,
         "z": pl.Float64,
     }
-    
-    if "zonly" not in mode:
+
+    if "zonly" not in _modes:
         consistent_schema["distance"] = pl.Float64
 
-    if "lineid" in mode:
+    if "lineid" in _modes:
         consistent_schema["lineid"] = pl.Int16
 
     if isinstance(geojson_input, BaseGeometry):
@@ -203,17 +303,9 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
             # print("Got Feature collection and 0: ", geojson["features"][0]["geometry"])
             for feature in geometries:
                 geom = feature["geometry"]
-                if (
-                    geom["type"] == "Point"
-                    and mode is not None
-                    and "connect_pt" in mode.lower()
-                ):
+                if geom["type"] == "Point" and "connect_pt" in _modes:
                     pts_coords.append(geom["coordinates"])
-                elif (
-                    geom["type"] == "MultiPoint"
-                    and mode is not None
-                    and "connect_pts" in mode.lower()
-                ):
+                elif geom["type"] == "MultiPoint" and "connect_pts" in _modes:
                     pts_coords.extend(geom["coordinates"])
                 else:
                     # print("Feature in collection: ", geom["type"], " and now pts_coords: ", pts_coords)
@@ -240,17 +332,6 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
 
     if not hasFeature:
         geom_type = geometry.geom_type
-        print(
-            "Got geometry: ",
-            geometry,
-            " with type: ",
-            geom_type,
-            " with mode: ",
-            mode,
-            " with sample: ",
-            poly_sample,
-        )
-        # interval = 15 / 3600  # 15 arc-seconds in degrees
 
         if geom_type in {"Point", "LineString", "LinearRing", "MultiPoint"}:
             df = process_linestring(geometry, line_id, mode, sample)
@@ -277,9 +358,9 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
 
     if dataframes:
         # return pl.concat([df.cast(consistent_schema) for df in dataframes]), line_id
-        df = pl.concat([df.cast(consistent_schema) for df in dataframes]) 
+        df = pl.concat([df.cast(consistent_schema) for df in dataframes])
         # 202502 add truncated mode: Apply truncation if "truncate" mode is enabled
-        if "truncate" in mode:
+        if "truncate" in _modes:
             df = df.with_columns(
                 [
                     pl.col("longitude").round(5),
@@ -288,12 +369,18 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
             )
 
         # Ensure ALL longitudes are in 0-360 range if "lon360" mode is set
-        if "lon360" in mode:
+        if "lon360" in _modes:
             df = df.with_columns(
                 pl.when(pl.col("longitude") < 0)
                 .then(pl.col("longitude") + 360)
                 .otherwise(pl.col("longitude"))
                 .alias("longitude")
+            )
+
+        # v0.5.3 H5: invariant — zonly mode must not emit `distance` column.
+        if "zonly" in _modes:
+            assert "distance" not in df.columns, (
+                "polyhandler invariant violated: zonly mode produced distance column"
             )
 
         return df, line_id

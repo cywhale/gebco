@@ -107,3 +107,154 @@
     -- Make FastAPI OpenAPI metadata env-driven (API_VERSION, API_SERVERS, GEBCO_DATASET_*)
     -- Stop advertising localhost in Swagger servers; use public domains only
     -- Bump public API metadata version to 1.1.0 and sync conf/gebco_v1.json
+
+#### ver 0.5.3 Public-API input-surface hardening + unit-test coverage
+
+    -- jsonsrc URL fetch: inline-first dispatch, scheme allowlist, getaddrinfo
+       + ipaddress private-CIDR block (incl. IPv4-mapped IPv6), allow_redirects=False,
+       streamed Content-Length-ignoring size cap (default 2 MB), connect/read timeouts.
+       Default still allows public http/https URLs (no behaviour change for legit clients).
+    -- lon/lat finite + range validation in both query and jsonsrc JSON paths
+       (rejects NaN, ±Inf, out-of-range; 400 with concrete message).
+       mode=lon360 now also ACCEPTS input in [0, 360] (validated first, then
+       normalised to [-180, 180] for grid lookup).
+    -- mode tokens parsed once into a frozenset; 16 substring matches retired.
+       Unknown tokens are warning-only, never reject (forward-compat).
+    -- bbox cell-count caps on both line/point and polygon paths; over-cap
+       requests return 413 instead of OOMing. Env knobs
+       GEBCO_MAX_BBOX_CELLS_LINE (default 2e8) and GEBCO_MAX_POLYGON_CELLS
+       (default 2e9 — provisional. Phase D2 showed the current polygon
+       implementation is bbox-bound rather than row-bound, so this guard is
+       effectively dormant in v0.5.3 and will be revisited in v0.5.4 after
+       the polyhandler redesign).
+    -- Dead df1.drop("distance") removed from gebco_app.py; invariant now
+       asserted inside polyhandler() so future regressions are caught.
+    -- GEBCO_DASK_POOL_SIZE env knob (default 4; preserves v0.5.2 behaviour
+       byte-for-byte). Ablation toward default 0 planned post-merge per spec.
+    -- Structured app-level logging via QueueHandler + QueueListener with
+       idempotent configure / shutdown wired into lifespan. One JSON log
+       line per request at INFO; errors and slow (>1000 ms) requests escalate
+       to WARNING regardless of level. Envs GEBCO_LOG_LEVEL (default WARNING),
+       GEBCO_LOG_SAMPLE_RATE, GEBCO_SLOW_REQUEST_MS.
+    -- numarr_query_validator raises ValueError instead of returning the
+       legacy "Format Error" string sentinel.
+    -- dev2026/scripts/convert_incremental.py default codec flipped to blosc;
+       zlib path now requires explicit --allow-slow-zlib (anti-foot-gun for
+       future GEBCO release upgrades).
+    -- New top-level tests/ tree with pytest fixtures; sandbox-runnable
+       unit tests pass (modes / validation / jsonsrc / lon360 / logger /
+       xmeridian), and the full Mac run `uv run --group dev pytest tests/`
+       passes including the polars-dependent suites (zprofile / polyhandler /
+       bbox guard).
+    -- Deferred to follow-up:
+       * H9 — np.append → list accumulation in zprofile/xmeridian hot paths
+         (~70 call sites; perf-only refactor, needs benchmark vs real Zarr
+         before merging).
+       * S1 bbox sizing probe ran on Mac and Phase D/Phase D2 were recorded;
+         results triggered the v0.5.4 performance plan rather than an
+         immediate polygon-cap tightening.
+       * H10 dask-pool default-off flip after VM37 staging soak.
+    -- Spec: specs/v0.5.3_hardening_checklist_v2.md (round-2 reviewed).
+
+#### ver 0.5.4 Performance hardening — H9 + polygon redesign
+
+    Branch: gebco_2026_perf_v054. Spec: specs/v0.5.4_performance_hardening_plan.md.
+
+    Status: implementation + Mac-side measurements complete on branch.
+
+    -- W1 / H9: Replace np.append accumulators in src/xmeridian.crossBoundary
+       and the multi-point branch of src/zprofile.zprofile with Python-list
+       buffers + a single np.asarray at the loop tail. Drops the long-polyline
+       hot path from O(n²) to amortised O(n).
+    -- W1 / H9 round 4: Replace `np.absolute(scalar)` with builtin `abs()`
+       in zprofile + xmeridian hot loops (3x faster per-call on scalars;
+       numpy wraps the value before computing absolute). Adds
+       `dev2026/scripts/profile_sparse_polyline.py` for stage-level wall
+       decomposition.
+    -- W1 / H9 round 3: Swap geopy.distance.geodesic for pyproj.Geod.inv
+       (`src.zprofile._seg_km`). Both use the same WGS84/Karney geographiclib
+       algorithm internally so distance values are byte-equal (verified to
+       3.64e-12 km / 3.6 picometres max delta over 0.1-20000 km test pairs).
+       pyproj scalar call is ~74× faster than geopy.geodesic per call
+       (1.48 ms vs 110 ms for 4800 calls on a sandbox aarch64 venv) because
+       pyproj wraps PROJ's optimised C implementation instead of geopy's
+       pure-Python class+method stack on top of geographiclib. Mac final
+       benchmark against `main`:
+         * sparse style `206.26 ms → 22.94 ms` (`8.99×`)
+         * dense style  `237.44 ms → 15.71 ms` (`15.11×`)
+       Adds pyproj>=3.6,<4 to root pyproject.toml runtime deps.
+       Sandbox correctness gate: tests/test_xmeridian.py 13/13 pass
+       (including new long_alternating + long_polyline shape cases).
+       Mac correctness gate (TODO): verify_polygon_meridian.py T5/T6
+       byte-equal vs v0.5.3 + benchmark_long_polyline.py target ≥ 3× median speedup.
+    -- W1 H13 follow-up: gebco_app.gebco() now requests dataframe mode
+       internally and reads df.height directly for the structured log line,
+       removing the json.loads(response.body) round-trip the v0.5.3 ship
+       carried as a documented stop-gap.
+    -- W2-B: src/polyhandler.process_polygon_part now batches the
+       meshgrid + shapely.contains_xy pipeline on a **cell-count budget**
+       (default 1e6 cells/batch, env knob GEBCO_POLYGON_BATCH_CELLS).
+       Batch height auto-derives so thin polygons (where row-count
+       batching from the earlier v0.5.4 draft was a no-op) still get
+       fragmented. Preserves exact contains-on-cell-centre semantics →
+       polygon outputs byte-equal to v0.5.3. Includes a cheap lat-extent
+       prefilter that drops whole batches outside the polygon's bbox.
+    -- W2-B round 3: Replace shapely.points + shapely.contains with
+       shapely.contains_xy. The latter vectorises directly from numpy
+       coordinate arrays into GEOS without constructing one Python
+       Point object per cell — ~12× faster wall (29.5 ms vs 358.6 ms on
+       a 1M-point batch in sandbox) AND drops per-batch peak RSS from
+       ~80 MB of Point PyObjects to ~8 MB of mask+meshgrid scratch.
+       Mask output is byte-equal to the pre-round-3 implementation.
+    -- W2-B round 3: Add gc.collect() at end of each row-batch loop to
+       force immediate reclaim of GEOS / numpy temporaries before the
+       next batch allocates. `del` alone doesn't always run cycle
+       collection on shapely's internal references, which let the
+       v0.5.3-era ~80 MB-per-batch temporaries accumulate into ~2 GB
+       across 24 batches on the D2 cross180_thin case. With gc.collect
+       per batch, peak RSS is bounded to one batch's working set.
+    -- W2-B round 4: Prepare the polygon geometry once per request half
+       before calling `shapely.contains_xy`, and remove the leftover
+       `print("Got geometry ...")` hot-path debug output. This is what
+       finally moved `thin_ribbon` from a borderline `0.52–0.56 s`
+       fail into a stable `0.121 s` pass on Mac.
+    -- New env knob: GEBCO_POLYGON_BATCH_CELLS (default `1_000_000`).
+       Renamed from the v0.5.4 draft's GEBCO_POLYGON_ROW_BATCH after
+       codex measurements showed a row-count knob was moot for thin
+       polygons at production sample=5 (the whole polygon fit in one
+       batch). The cell-budget knob actually bites on the D2 cross180_thin
+       worst case at sample=1.
+    -- New verification artefacts:
+       * dev2026/scripts/profile_cross180_thin.py — required §5 pre-work
+         cProfile spike (--repo-root respected per codex's fix), runs
+         the D2 archetype under cProfile and dumps pstats + top frames
+         for PR2 reviewer baseline.
+       * dev2026/scripts/benchmark_long_polyline.py — P-Bench-1 driver
+         with --style sparse|dense. Sparse style (2-vertex wide span)
+         exercises the asymptotic O(n²) → O(n) regime the plan §8 ≥3×
+         target refers to; dense style (n input vertices, small span)
+         tests segment-level appends. Default is sparse so the §8
+         acceptance is measurable.
+       * dev2026/scripts/benchmark_polygon_shapes.py — P-Bench-2 driver
+         with concrete §12 acceptance thresholds (thin ≤ 0.5 s, coastal
+         ≤ 1.5 s, cross180_thin ≤ 30 s + ≤ 2000 MB RSS). Shapes are
+         built from `probe_polygon_cap_shapes.py`'s D2 constructors
+         (`_dense_rect`, `_thin_rect`, `_coastal_jagged`,
+         `_cross180_parts`) so mask ratios match D2 (~0.04 thin, ~0.6
+         coastal, ~0.07 cross180) — rectangles were used in an earlier
+         v0.5.4 draft but inflated harvest RSS by ~10× because mask=1.0.
+         Defaults to --sample 1 so the plan thresholds (which were
+         derived from D2's sample=1 conditions) actually apply.
+       * verify_polygon_meridian.py T7 — D2 cross180_thin regression case.
+    -- TESTING.md Phase F repurposed for H9 long-polyline bench; new
+       Phase G for polygon redesign + cProfile snapshot + T7 result;
+       new Phase H for the §6 PR3 cap-revisit decision.
+    -- Mac verification completed:
+       * `uv run --group dev pytest tests/ -q` PASS
+       * `verify_polygon_meridian.py` PASS (T1–T7)
+       * `verify_polyhandler_endpoint.py` PASS
+       * `benchmark_polygon_shapes.py --trials 3` PASS for all archetypes
+         (`thin_ribbon 0.121 s / 5.8 MB`, `coastal 0.127 s / 51.8 MB`,
+         `cross180_thin 4.115 s / 203.6 MB`)
+       * Phase H decision: default `GEBCO_MAX_POLYGON_CELLS` tightened
+         from provisional `2e9` to `5e7`.

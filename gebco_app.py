@@ -1,13 +1,41 @@
-import xarray as xr
-import numpy as np
-from fastapi import FastAPI, status, Query
-from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, ORJSONResponse
-from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.openapi.utils import get_openapi
+"""FastAPI app entry point for the ODB GEBCO bathymetry service.
+
+v0.5.3 hardening pass — see specs/v0.5.3_hardening_checklist_v2.md.
+
+The application contract is unchanged from v0.5.2; this version adds:
+
+  * H1  jsonsrc URL fetch hardened (timeout / SSRF guard / no-redirect /
+        streamed size cap). Default still accepts http/https URLs from
+        the public internet.
+  * H2  lon / lat finite + range validation (rejects NaN, ±Inf,
+        out-of-range values).
+  * H3  `mode=lon360` accepts input in [0, 360] (validated first, then
+        normalised to [-180, 180] for grid lookup).
+  * H4  `mode` tokens parsed once into a frozenset; substring matches
+        retired.
+  * H5  dead `df1.drop("distance")` code removed; the invariant is now
+        asserted inside `polyhandler()`.
+  * H6  bbox cell-count caps for line/point and polygon paths; over-cap
+        requests return 413 instead of OOMing.
+  * H10 dask pool size made env-controlled (`GEBCO_DASK_POOL_SIZE`).
+  * H13 structured logging via QueueHandler; one log line per request.
+"""
+import json
+import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional  # , Union
+from typing import Optional
+
+import dask
+import numpy as np
+import xarray as xr
+from fastapi import FastAPI, Query, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse, ORJSONResponse
+from multiprocessing.pool import Pool
 
 # Resolve data/ paths relative to this file, NOT the current working directory.
 # Production launchers (gunicorn / pm2) always cd into the repo root so the
@@ -16,20 +44,18 @@ from typing import Optional  # , Union
 # old path. Anchoring to __file__ is correct in both cases.
 _APP_ROOT = Path(__file__).resolve().parent
 
-# from pydantic import BaseModel, ValidationError, HttpUrl, validator
-import requests
-import json
-
-# import orjson
-# from loggerConfig import logger
 import src.config as config
-from src.zprofile import zprofile
+from src import logger as gebco_logger
+from src.jsonsrc import JsonSrcError, load_jsonsrc
+from src.modes import parse_modes
 from src.polyhandler import polyhandler
+from src.validation import numarr_query_validator, validate_lonlat
+from src.zprofile import BboxTooLarge, zprofile
 
-import dask
-from multiprocessing.pool import Pool
-
-dask.config.set(pool=Pool(4))  # , scheduler='processes', num_workers=4)
+# v0.5.3 H10 — dask multiprocessing pool is opt-in via env knob; default
+# matches v0.5.2 (size 4) to keep behaviour byte-equal at upgrade time.
+if config.DASK_POOL_SIZE > 1:
+    dask.config.set(pool=Pool(config.DASK_POOL_SIZE))
 
 
 def generate_custom_openapi():
@@ -51,13 +77,12 @@ def generate_custom_openapi():
     return app.openapi_schema
 
 
-# @app.on_event("startup")
-# async def startup():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # v0.5.3 H13: start the structured logger.
+    gebco_logger.configure()
+
     config.ds = xr.open_zarr(
-        #'data/GEBCO_2022_sub_ice_topo.zarr', chunks='auto', group='gebco',
-        # "data/GEBCO_2023_sub_ice_topo.zarr",
         # Blosc/LZ4 clevel=5 — matches 2023 compressor for read-speed parity.
         # See dev2026/scripts/benchmark_old_new_api.py for the reasoning.
         # Path is anchored to this file's directory (see _APP_ROOT above) so
@@ -69,15 +94,12 @@ async def lifespan(app: FastAPI):
     )
     arcsec = 15
     config.arc = int(3600 / arcsec)  # 15 arc-second
-    config.basex = 180  # -180 - 180 <==> 0 - 360, half is 180
-    config.basey = 90  # -90 - 90 <==> 0 - 180, half is 90
-    # config.halfxidx = 180 * config.arc  # in netcdf, longitude length = 86400
-    # config.halfyidx = 90 * config.arc  # in netcdf, latitude length = 43200
-    # config.subsetFlag = True
-    # above code to execute when app is loading
+    config.basex = 180
+    config.basey = 90
     yield
-    # below code to execute when app is shutting down
     config.ds.close()
+    # v0.5.3 H13: stop the background log listener so reloads don't leak.
+    gebco_logger.shutdown()
 
 
 app = FastAPI(docs_url=None, lifespan=lifespan, default_response_class=ORJSONResponse)
@@ -85,20 +107,15 @@ app = FastAPI(docs_url=None, lifespan=lifespan, default_response_class=ORJSONRes
 
 @app.get("/gebco/openapi.json", include_in_schema=False)
 async def custom_openapi():
-    return JSONResponse(
-        generate_custom_openapi()
-    )  # app.openapi()) modify to customize openapi.json
+    return JSONResponse(generate_custom_openapi())
 
 
 @app.get("/gebco/swagger", include_in_schema=False)
 async def custom_swagger_ui_html():
     return get_swagger_ui_html(
-        openapi_url="/gebco/openapi.json",  # app.openapi_url
+        openapi_url="/gebco/openapi.json",
         title=app.title,
     )
-
-
-### Global variables move to config.py ###
 
 
 def geojson_validator(json_obj):
@@ -133,19 +150,23 @@ def geojson_validator(json_obj):
     )
 
 
-def numarr_query_validator(qry):
-    if "," in qry:
-        try:
-            out = np.array([float(x.strip()) for x in qry.split(",")])
-            return out
-        except ValueError:
-            return "Format Error"
-    else:
-        try:
-            out = np.array([float(qry.strip())])
-            return out
-        except ValueError:
-            return "Format Error"
+def _error_response(status_code: int, message: str, *, request: Request,
+                    t0: float, modes: frozenset, polyMode: bool,
+                    npoints: Optional[int]) -> JSONResponse:
+    """Build a 4xx/5xx JSONResponse and emit a single WARNING log line."""
+    elapsed_ms = round((time.monotonic() - t0) * 1000, 2)
+    gebco_logger.logger.warning(json.dumps({
+        "event": "gebco_request_error",
+        "status": status_code,
+        "error": message,
+        "client": getattr(request.client, "host", None) if request.client else None,
+        "ua": (request.headers.get("user-agent", "") or "")[:120],
+        "mode": sorted(modes) if modes else [],
+        "polyMode": polyMode,
+        "npoints": npoints,
+        "elapsed_ms": elapsed_ms,
+    }))
+    return JSONResponse(status_code=status_code, content={"Error": message})
 
 
 @app.get(
@@ -154,6 +175,7 @@ def numarr_query_validator(qry):
     summary=f"Get GEBCO bathymetry ({config.api_dataset_label})",
 )
 def gebco(
+    request: Request,
     lon: Optional[str] = Query(
         None,
         description="comma-separated longitude values. One of lon/lat and jsonsrc should be specified as longitude/latitude input.",
@@ -166,7 +188,7 @@ def gebco(
     ),
     mode: Optional[str] = Query(
         None,
-        description="comma-separated modes: row, point, truncate (for longitude and latitude to 5 decimal places), lon360 (output longitude in [0, 360]). Optional can be none.\n"
+        description="comma-separated modes: row, point, truncate (for longitude and latitude to 5 decimal places), lon360 (output longitude in [0, 360]; input may also be in [0, 360]). Optional can be none.\n"
         + "Special mode for polygon: zonly (not output pair-wise distance), lineid (output lineid for MultiLineString).",
     ),
     sample: Optional[int] = Query(
@@ -180,86 +202,115 @@ def gebco(
         + 'New feature: GeoJSON to get terrain of polygon. Example: {"type": "Polygon", "coordinates": [[[121, 22.5], [121, 23.5], [122, 23.5], [122, 22.5], [121, 22.5]]]}. Feature collection is allowed.',
     ),
 ):
+    t0 = time.monotonic()
     polyMode = False
-    if mode is None:
-        mode = ""
+    modes = parse_modes(mode)  # v0.5.3 H4
 
     if sample is None or sample < 1:
-        # sample = 1
         poly_sample = 5
-    # elif mode is not None and "poly_sample_only" in mode:
-    #    poly_sample = sample  # only restrict polygon sample
-    #    sample = 1  # but not restrict other (line, potin)
     else:
         poly_sample = sample
 
+    loni: Optional[np.ndarray] = None
+    lati: Optional[np.ndarray] = None
+    rows: Optional[int] = None
+    response: Optional[JSONResponse] = None
+
     try:
         if jsonsrc:
-            # Validate it's a URL
-            try:
-                json_resp = requests.get(jsonsrc)
-                json_resp.raise_for_status()
-                json_obj = json_resp.json()
-            except requests.RequestException:
-                try:
-                    json_obj = json.loads(jsonsrc)
-                except json.JSONDecodeError:
-                    raise ValueError(
-                        "Input jsonsrc must be a valid URL or a JSON string."
-                    )
+            # v0.5.3 H1: hardened jsonsrc loader (inline-first, SSRF guard,
+            # streamed size cap). Raises JsonSrcError (subclass of ValueError).
+            json_obj = load_jsonsrc(jsonsrc)
 
             polyMode = geojson_validator(json_obj)
             if polyMode:
-                df1, _ = polyhandler(
-                    json_obj, 0, mode, 1, poly_sample
-                )  # sample is always 1 if not polygon
-                format = "default"
-                if mode is not None and "row" in mode.lower():
-                    format = "row"
-                if (
-                    mode is not None
-                    and "zonly" in mode.lower()
-                    and "distance" in df1.columns
-                ):
-                    df1.drop("distance")
-                if format == "row":
+                df1, _ = polyhandler(json_obj, 0, mode if mode else "", 1, poly_sample)
+                # v0.5.3 H5: dead `df1.drop("distance")` block removed.
+                # polyhandler() guarantees no distance column in zonly mode.
+                if "row" in modes:
                     out = df1.to_dicts()
                 else:
-                    # out = df1.to_pandas().to_dict() #produce {"longitude": {...}, "latitude": {...}, "value": {}}
-                    # But desired result: ` {"longitude": [...], "latitude": [...], "value": [....]}`.
                     out = {column: df1[column].to_list() for column in df1.columns}
-                return ORJSONResponse(content=out)
-
-            loni = np.array(json_obj["longitude"])
-            lati = np.array(json_obj["latitude"])
+                rows = df1.height
+                response = ORJSONResponse(content=out)
+            else:
+                loni = np.asarray(json_obj["longitude"], dtype=np.float64)
+                lati = np.asarray(json_obj["latitude"], dtype=np.float64)
         else:
             if lon and lat:
+                # v0.5.3 H8: validators now raise ValueError instead of
+                # returning a "Format Error" string sentinel.
                 loni = numarr_query_validator(lon)
                 lati = numarr_query_validator(lat)
-
-                if isinstance(loni, str) or isinstance(lati, str):
-                    return JSONResponse(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        content=jsonable_encoder(
-                            {
-                                "Error": "Check your input format should be comma-separated values"
-                            }
-                        ),
-                    )
-                # Validate longitude and latitude
-                # LonLat(longitude=longitude.tolist(), latitude=latitude.tolist())
             else:
                 raise ValueError(
                     "Both 'lon' and 'lat' parameters must be provided, otherwise use 'jsonsrc' as input"
                 )
 
-    except (ValueError, json.JSONDecodeError) as e:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST, content={"Error": str(e)}
+        if response is None:
+            # v0.5.3 H2 + H3: validate, then (for lon360) normalise.
+            if "lon360" in modes:
+                err = validate_lonlat(loni, lati, allow_lon360=True)
+                if err is None:
+                    # H3 — only normalise AFTER the original input has been
+                    # accepted against the [0, 360] window.
+                    loni = np.where(loni > 180.0, loni - 360.0, loni)
+            else:
+                err = validate_lonlat(loni, lati, allow_lon360=False)
+            if err is not None:
+                response = _error_response(
+                    status.HTTP_400_BAD_REQUEST, err,
+                    request=request, t0=t0, modes=modes,
+                    polyMode=polyMode, npoints=int(loni.size) if loni is not None else None,
+                )
+            else:
+                # v0.5.4 H13 follow-up: ask zprofile for a polars DataFrame
+                # directly so the handler owns the row count without a JSON
+                # round-trip. Format the response from the DataFrame here.
+                # sample is always 1 for line/point queries.
+                mode_for_zp = mode or ""
+                if "dataframe" not in modes:
+                    mode_for_zp = (mode_for_zp + ",dataframe") if mode_for_zp else "dataframe"
+                df = zprofile(loni, lati, mode_for_zp, 1)
+                rows = int(df.height)
+                if "row" in modes:
+                    out = df.to_dicts()
+                else:
+                    out = {col: df[col].to_list() for col in df.columns}
+                response = ORJSONResponse(content=out)
+    except JsonSrcError as exc:
+        return _error_response(
+            status.HTTP_400_BAD_REQUEST, str(exc),
+            request=request, t0=t0, modes=modes, polyMode=polyMode, npoints=None,
         )
-    except requests.HTTPError as e:
-        return JSONResponse(
-            status_code=e.response.status_code, content={"Error": str(e)}
+    except BboxTooLarge as exc:
+        return _error_response(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, str(exc),
+            request=request, t0=t0, modes=modes, polyMode=polyMode,
+            npoints=int(loni.size) if loni is not None else None,
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        return _error_response(
+            status.HTTP_400_BAD_REQUEST, str(exc),
+            request=request, t0=t0, modes=modes, polyMode=polyMode,
+            npoints=int(loni.size) if loni is not None else None,
         )
 
-    return zprofile(loni, lati, mode, 1)  # sample
+    # v0.5.3 H13: one structured INFO line per successful request.
+    elapsed_ms = round((time.monotonic() - t0) * 1000, 2)
+    log_payload = {
+        "event": "gebco_request",
+        "client": getattr(request.client, "host", None) if request.client else None,
+        "ua": (request.headers.get("user-agent", "") or "")[:120],
+        "mode": sorted(modes),
+        "polyMode": polyMode,
+        "npoints": int(loni.size) if loni is not None else None,
+        "rows": rows,
+        "elapsed_ms": elapsed_ms,
+    }
+    if elapsed_ms > config.SLOW_REQUEST_MS:
+        # Slow requests escalate to WARNING even when INFO is off.
+        gebco_logger.logger.warning(json.dumps({**log_payload, "slow": True}))
+    else:
+        gebco_logger.logger.info(json.dumps(log_payload))
+    return response

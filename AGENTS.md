@@ -177,6 +177,82 @@ production Zarr; the ice_surface variant is only useful for schema checks.
     app only reads the canonical name — but you can `rm -rf` it on a normal
     filesystem to reclaim ~3.8 GB.
 
+12. **v0.5.3 runtime knobs (all env-controlled, defaults preserve v0.5.2
+    behaviour where applicable):**
+
+    | Knob | Default | Effect |
+    |---|---|---|
+    | `GEBCO_JSONSRC_ALLOW_REMOTE` | `true` | set `false` to refuse all remote URL fetches |
+    | `GEBCO_JSONSRC_MAX_BYTES` | `2000000` | streamed response size cap (bytes) |
+    | `GEBCO_JSONSRC_CONNECT_TIMEOUT_S` | `2` | URL connect timeout |
+    | `GEBCO_JSONSRC_READ_TIMEOUT_S` | `5` | URL read timeout |
+    | `GEBCO_MAX_BBOX_CELLS_LINE` | `200000000` (2e8) | line/point path bbox cap; raises 413 above |
+    | `GEBCO_MAX_POLYGON_CELLS` | `50000000` (5e7) | polygon path raw-bbox cap; raises 413 above |
+    | `GEBCO_DASK_POOL_SIZE` | `4` | dask multiprocessing pool; set `0`/`1` to disable |
+    | `GEBCO_LOG_LEVEL` | `WARNING` | structured app log level |
+    | `GEBCO_LOG_SAMPLE_RATE` | `1.0` | INFO-level sampling rate (future use) |
+    | `GEBCO_SLOW_REQUEST_MS` | `1000` | requests slower than this escalate to WARNING |
+    | `GEBCO_POLYGON_BATCH_CELLS` (v0.5.4) | `1000000` | per-batch cell budget for `polyhandler.process_polygon_part`; batch height auto-derives as `max(1, BATCH_CELLS // n_lons)` so thin polygons still get fragmented; `0` disables batching (one giant meshgrid like v0.5.3); renamed from the earlier `GEBCO_POLYGON_ROW_BATCH` because a fixed row-count knob was moot for thin polygons at production `sample=5` (the whole polygon already fitted in one batch) |
+
+    See `specs/v0.5.3_hardening_checklist_v2.md` for the rationale behind
+    each knob and how the cap defaults were chosen. `dev2026/scripts/probe_bbox_limits.py`
+    is the spike script for tuning the cap defaults against a real Zarr.
+
+    **Important follow-up from Phase D2:** do NOT treat frontend
+    "returned rows" as a proxy for polygon safety. The current polygon
+    implementation allocates over the full bbox before masking, so sparse
+    / ribbon / cross-180 polygons can be slow or memory-heavy even when
+    the final `sample=5` output would be tiny. See
+    `dev2026/scripts/probe_polygon_cap_shapes.py` and
+    `dev2026/TESTING.md` Phase D2 before changing
+    `GEBCO_MAX_POLYGON_CELLS`.
+
+    **v0.5.4 status:** the polygon redesign is now validated on Mac. The
+    row-batch redesign in
+    `src/polyhandler.process_polygon_part` (W2-B, round-3) combines
+    three optimisations: (a) `GEBCO_POLYGON_BATCH_CELLS` (default 1e6)
+    cell-budget batching with `batch_lats = max(1, BATCH_CELLS // n_lons)`,
+    (b) `shapely.contains_xy` instead of `shapely.points + shapely.contains`
+    (avoids per-cell Point objects, ~12× faster + much less RSS), and
+    (c) `gc.collect()` per batch to force shapely cycle reclaim. Round 4
+    additionally prepares the polygon geometry once per request-half
+    before `contains_xy`, which is what pushed `thin_ribbon` over the
+    final gate. Mac Phase G results:
+    `thin_ribbon 0.121 s / 5.8 MB`, `coastal 0.127 s / 51.8 MB`,
+    `cross180_thin 4.115 s / 203.6 MB`. Because the D2-sized
+    `cross180_thin` now lands under the derived `5.0 s / 1 GB` target,
+    `GEBCO_MAX_POLYGON_CELLS` default was tightened from provisional
+    `2e9` to `5e7`.
+
+    **v0.5.4 H9 status:** the np.append → list refactor in
+    `src/zprofile.py` + `src/xmeridian.py` is the *asymptotic* fix
+    (O(n²) → O(n) on the inner cell-walk loop), but profiling showed
+    `geopy.distance.geodesic` was the wall-time bottleneck on the
+    benchmark, not the np.append cost. The round-3 swap to
+    `pyproj.Geod.inv` (via `src.zprofile._seg_km`) is byte-equal to
+    geopy (both use WGS84/Karney geographiclib, max delta 3.6 pm) but
+    ~74× faster per call because pyproj wraps PROJ's C implementation
+    instead of geopy's pure-Python stack. Final Mac benchmark against
+    `main`: sparse `206.26 ms → 22.94 ms` (`8.99×`), dense
+    `237.44 ms → 15.71 ms` (`15.11×`). Adds `pyproj` to root
+    `pyproject.toml` runtime deps.
+
+13. **mode tokens are now a set, not a substring search** (v0.5.3 H4).
+    `src/modes.py` exposes `parse_modes(mode_str) -> frozenset[str]` and
+    a `KNOWN_MODES` allowlist. Unknown tokens are warning-only — never
+    reject — so that future / typo / third-party tokens don't break
+    backward compatibility. When adding a new mode, update `KNOWN_MODES`
+    and the OpenAPI `mode` description string.
+
+14. **jsonsrc 7-layer defence lives in `src/jsonsrc.py`** (v0.5.3 H1).
+    Inline JSON dispatch is decided by the FIRST non-whitespace char
+    (`{` or `[`); anything else is treated as a URL. URLs go through
+    scheme allowlist → host resolve → private-IP block (incl. IPv4-mapped
+    IPv6) → no-redirect → streamed size cap → JSON parse. **Residual
+    risk:** DNS rebinding is NOT mitigated (host resolves "safely" during
+    allowlist check but to a private address at connect time); spec §6.5
+    documents this acceptance.
+
 ## How to add a new GEBCO release (recipe)
 
 Used for 2026; reuse for 2027+.
@@ -199,6 +275,10 @@ Used for 2026; reuse for 2027+.
    * `verify_polyhandler_endpoint.py` — real `polyhandler()` with the
      production `sample=5` default. Requires polars in the dev2026 venv
      (`uv sync` handles it on macOS/Linux).
+   * `uv run --group dev pytest tests/` — v0.5.3 unit test suite
+     covering `src/modes`, `src/validation`, `src/jsonsrc`, `src/logger`,
+     `src/xmeridian`, `src/zprofile`, `src/polyhandler`, plus bbox-guard
+     trip tests.
 6. Update `gebco_app.py`: `lifespan` path, OpenAPI description (new DOI), and
    the endpoint summary string. Three string edits.
 7. Bump version in `change_log.md`.

@@ -82,12 +82,29 @@ def main() -> int:
     p.add_argument("dst_zarr", type=Path)
     p.add_argument("--chunk-lat", type=int, default=DEFAULT_CHUNKS["lat"])
     p.add_argument("--chunk-lon", type=int, default=DEFAULT_CHUNKS["lon"])
-    p.add_argument("--codec", choices=["zlib", "blosc"], default="zlib",
-                   help="compressor: 'zlib' (level=zlib-level) or 'blosc' (lz4 clevel=5, "
-                        "matches the 2023 production Zarr for read-speed parity)")
+    # v0.5.3 H7: default flipped to 'blosc' so callers no longer have to
+    # remember --codec=blosc to match the 2023 production layout. zlib is
+    # still available but requires the explicit --allow-slow-zlib flag.
+    p.add_argument("--codec", choices=["zlib", "blosc"], default="blosc",
+                   help="compressor: 'blosc' (default; lz4 clevel=5, matches the "
+                        "2023 production Zarr for read-speed parity) or 'zlib' "
+                        "(level=zlib-level; requires --allow-slow-zlib)")
+    p.add_argument("--allow-slow-zlib", action="store_true",
+                   help="Required together with --codec zlib. Documents that the "
+                        "caller knows the resulting Zarr is ~2.66x slower at "
+                        "read time vs Blosc (see dev2026/TESTING.md Step 4).")
     p.add_argument("--zlib-level", type=int, default=1)
     p.add_argument("--budget-seconds", type=float, default=40.0)
     args = p.parse_args()
+
+    if args.codec == "zlib" and not args.allow_slow_zlib:
+        print(
+            "refusing to write zlib codec: the canonical production Zarr is "
+            "Blosc/lz4 (see AGENTS.md gotcha #1). Pass --allow-slow-zlib if "
+            "you really want zlib (back-compat with the 2022→2023 notebook).",
+            file=sys.stderr,
+        )
+        return 2
 
     if not args.src_nc.exists():
         print(f"src not found: {args.src_nc}", file=sys.stderr)
