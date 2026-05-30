@@ -138,6 +138,22 @@ def process_polygon_part(
     else:
         batch_lats = max(1, batch_cells // n_lons)
 
+    # v0.5.4 round 4 — guard gc.collect() to the multi-batch case ONLY.
+    # The live A/B test against the deployed v0.5.2 endpoint
+    # (ecodata.odb.ntu.edu.tw) showed a ~3-4× polygon regression for
+    # small polygons that fit in a single batch (e.g. 0.5° Taiwan EEZ
+    # polygon at sample=1: 117 ms v0.5.4 vs 41 ms v0.5.2). Root cause:
+    # an unconditional `gc.collect()` at the end of each row-batch
+    # iteration walks the entire gunicorn worker heap (xarray + dask +
+    # polars + zarr) which dominates wall time when there is only one
+    # batch to process. The gc was added to bound peak RSS during the
+    # cross180_thin worst case (24+ batches); single-batch polygons
+    # don't need it. We now compute the batch count once and gate gc on
+    # `multi_batch` so the cross-180 RSS protection stays in place
+    # without taxing the common small-polygon path.
+    n_batches = (n_lats + batch_lats - 1) // batch_lats if batch_lats > 0 else 1
+    multi_batch = n_batches > 1
+
     for row_start in range(0, n_lats, batch_lats):
         row_end = min(row_start + batch_lats, n_lats)
         chunk_lats = lat_vals[row_start:row_end]
@@ -159,7 +175,8 @@ def process_polygon_part(
         mask = shapely.contains_xy(trans_poly, flat_lon, flat_lat)
         if not mask.any():
             del chunk_lon_mesh, chunk_lat_mesh, flat_lon, flat_lat, mask
-            gc.collect()
+            if multi_batch:
+                gc.collect()
             continue
         mask_2d = mask.reshape(chunk_lon_mesh.shape)
         # Harvest matched cells. elev_vals[row_start:row_end] is itself a
@@ -167,12 +184,16 @@ def process_polygon_part(
         z_chunks.append(elev_vals[row_start:row_end][mask_2d])
         lon_chunks.append(chunk_lon_mesh[mask_2d])
         lat_chunks.append(chunk_lat_mesh[mask_2d])
-        # explicit del + gc.collect — del alone removes refs but doesn't
-        # always trigger immediate cycle collection on the GEOS / numpy
-        # internals. Forcing gc.collect() per batch keeps peak RSS bounded
-        # to one batch worth of scratch, which is the whole point of W2-B.
+        # explicit del + (conditional) gc.collect — `del` removes refs;
+        # gc.collect forces immediate cycle reclaim of GEOS / numpy
+        # internals to bound RSS across multi-batch runs. For
+        # single-batch polygons (small / medium inputs at sample=5),
+        # gc.collect costs more than it saves on a busy gunicorn worker
+        # heap (see live A/B comment in the multi_batch computation
+        # above); skipping it there preserves the v0.5.2 latency.
         del chunk_lon_mesh, chunk_lat_mesh, mask, mask_2d, flat_lon, flat_lat
-        gc.collect()
+        if multi_batch:
+            gc.collect()
 
     if lon_chunks:
         masked_lons = np.concatenate(lon_chunks)

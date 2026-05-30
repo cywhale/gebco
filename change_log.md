@@ -166,6 +166,27 @@
        and the multi-point branch of src/zprofile.zprofile with Python-list
        buffers + a single np.asarray at the loop tail. Drops the long-polyline
        hot path from O(n²) to amortised O(n).
+    -- W2-B round 4 (BLOCKER, from live A/B test): The unconditional
+       `gc.collect()` introduced in round 3 caused a ~3-4× polygon
+       regression for small / single-batch polygons in the live deploy.
+       Measured against ecodata.odb.ntu.edu.tw (v0.5.2) from
+       api.odb.ntu.edu.tw (v0.5.4), with 3-trial median:
+         * 0.5° Taiwan polygon, sample=1, mode=zonly:
+             v0.5.4=117ms  v0.5.2=41ms  (data byte-identical)
+         * 0.5° Taiwan polygon, sample=5, mode=zonly:
+             v0.5.4=68ms   v0.5.2=17ms  (data byte-identical)
+         * 1°x0.5° cross-180 Fiji polygon, sample=5, mode=zonly:
+             v0.5.4=132ms  v0.5.2=33ms  (data byte-identical)
+       Root cause: gc.collect on a busy gunicorn worker walks the entire
+       heap (xarray + dask + polars + zarr objects) — ~50ms per call.
+       For single-batch polygons there's nothing to collect (contains_xy
+       doesn't accumulate Python Point objects), so the gc is pure waste.
+       Fix: pre-compute `multi_batch = n_batches > 1` and gate the gc on
+       it, so cross-180 / very-large bbox (D2 cross180_thin) still get
+       RSS protection but the common small-polygon path matches v0.5.2
+       latency. Live A/B harness preserved at
+       outputs/wt_api_compare/dev2026/scripts/api_compare_v054_vs_v052.py
+       (in the API-compare git worktree) for codex to re-run after redeploy.
     -- W1 / H9 round 4: Replace `np.absolute(scalar)` with builtin `abs()`
        in zprofile + xmeridian hot loops (3x faster per-call on scalars;
        numpy wraps the value before computing absolute). Adds
