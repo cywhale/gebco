@@ -67,11 +67,13 @@ def configured_ds(fake_ds):
     import src.config as config
 
     prev_ds = config.ds
+    prev_elev_zarr = getattr(config, "elev_zarr", None)
     prev_arc = config.arc
     prev_basex = config.basex
     prev_basey = config.basey
 
     config.ds = fake_ds
+    config.elev_zarr = None
     config.arc = 240
     config.basex = 0
     config.basey = 0
@@ -79,6 +81,7 @@ def configured_ds(fake_ds):
     yield fake_ds
 
     config.ds = prev_ds
+    config.elev_zarr = prev_elev_zarr
     config.arc = prev_arc
     config.basex = prev_basex
     config.basey = prev_basey

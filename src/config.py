@@ -26,6 +26,7 @@ api_dataset_attribution = os.getenv(
 api_servers = _csv_env("API_SERVERS")
 
 ds = None  # Declare ds as a global variable; populated by gebco_app.lifespan()
+elev_zarr = None  # Optional raw zarr.Array cache for sparse line reads.
 # arcsec =  #15
 arc = int(3600 / 15)  # 15 arc-second
 basex = 180  # -180 - 180 <==> 0 - 360, half is 180
@@ -38,6 +39,8 @@ basey = 90   # -90 - 90 <==> 0 - 180, half is 90
 # H6 — bbox cell-count caps (line/point and polygon paths).
 MAX_BBOX_CELLS_LINE = int(os.getenv("GEBCO_MAX_BBOX_CELLS_LINE", "200000000"))     # 2e8
 MAX_POLYGON_CELLS = int(os.getenv("GEBCO_MAX_POLYGON_CELLS", "50000000"))          # 5e7
+MAX_LINE_CHUNKS = int(os.getenv("GEBCO_MAX_LINE_CHUNKS", "64"))
+LINE_SPARSE_MIN_CELLS = int(os.getenv("GEBCO_LINE_SPARSE_MIN_CELLS", "1000000"))
 
 # H1 — jsonsrc URL fetch hardening.
 JSONSRC_ALLOW_REMOTE = os.getenv("GEBCO_JSONSRC_ALLOW_REMOTE", "true").lower() != "false"

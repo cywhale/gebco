@@ -40,6 +40,7 @@ def test_line_bbox_over_cap_raises(configured_ds, monkeypatch):
     with pytest.raises(BboxTooLarge) as exc_info:
         zprofile(loni, lati, "row", 1)
     assert exc_info.value.path == "line"
+    assert exc_info.value.kind == "bbox_cells"
     assert exc_info.value.cap == 1
 
 
@@ -48,6 +49,7 @@ def test_polygon_bbox_over_cap_raises(configured_ds, monkeypatch):
     with pytest.raises(BboxTooLarge) as exc_info:
         zdata_bbox((-179.0, -89.0, 179.0, 89.0), crosses_180=False, isRight=False, sample=5)
     assert exc_info.value.path == "polygon"
+    assert exc_info.value.kind == "polygon_cells"
 
 
 def test_polygon_bbox_under_cap_runs(configured_ds, monkeypatch):
@@ -60,8 +62,9 @@ def test_polygon_bbox_under_cap_runs(configured_ds, monkeypatch):
 
 
 def test_bbox_too_large_message_includes_path_and_cap():
-    err = BboxTooLarge(99999999999, 1000, path="line")
+    err = BboxTooLarge(99999999999, 1000, path="line", kind="line_chunks")
     msg = str(err)
     assert "line" in msg
+    assert "line_chunks" in msg
     assert "99,999,999,999" in msg
     assert "1,000" in msg

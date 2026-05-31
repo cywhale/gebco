@@ -52,22 +52,27 @@ def split_polygon_at_180(polygon):
     return split(transformed_polygon, splitter)
 
 
-def coords_zprof(coords, line_id, mode, sample):
+def coords_zprof(coords, line_id, mode, sample, *, stats_out=None):
     # locx, locy = coords[:, 0], coords[:, 1]
     zout = zprofile(
         loni=coords[:, 0],  # ",".join(str(x) for x in locx),
         lati=coords[:, 1],  # ",".join(str(y) for y in locy),
         mode=mode,
         sample=sample,
+        stats_out=stats_out,
     )
     # Add line_id column to the DataFrame
     zout = zout.with_columns(pl.lit(line_id).alias("lineid"))
     return zout
 
 
-def process_linestring(line, line_id, mode, sample):
+def process_linestring(line, line_id, mode, sample, *, stats_list=None):
     coordx = shapely.get_coordinates(line)
-    return coords_zprof(coordx, line_id, mode, sample)
+    part_stats = {} if stats_list is not None else None
+    df = coords_zprof(coordx, line_id, mode, sample, stats_out=part_stats)
+    if stats_list is not None:
+        stats_list.append(part_stats)
+    return df
 
 
 def process_polygon_part(
@@ -282,9 +287,35 @@ def process_polygon(polygon, line_id, mode, poly_sample):
     return df
 
 
-def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
+def _finalize_line_stats(stats_out: dict, line_stats: list[dict]) -> None:
+    if not line_stats:
+        return
+    stats_out["multi_parts"] = len(line_stats)
+    stats_out["touched_chunks_sum"] = int(sum(s.get("touched_chunks", 0) for s in line_stats))
+    stats_out["touched_chunks_max"] = int(max(s.get("touched_chunks", 0) for s in line_stats))
+    stats_out["bbox_subset_cells_sum"] = int(sum(s.get("bbox_subset_cells", 0) for s in line_stats))
+    stats_out["projected_bytes_sum"] = int(sum(s.get("projected_bytes", 0) for s in line_stats))
+    stats_out["projected_bytes_max"] = int(max(s.get("projected_bytes", 0) for s in line_stats))
+    stats_out["output_rows_sum"] = int(sum(s.get("output_rows", 0) for s in line_stats))
+    stats_out["output_rows_max"] = int(max(s.get("output_rows", 0) for s in line_stats))
+    stats_out["any_sparse"] = any(s.get("use_sparse", False) for s in line_stats)
+
+
+def polyhandler(
+    geojson_input,
+    line_id=0,
+    mode="",
+    sample=1,
+    poly_sample=5,
+    *,
+    stats_out=None,
+    _stats_root=True,
+):
     dataframes = []
     hasFeature = False
+    line_stats = None
+    if stats_out is not None:
+        line_stats = stats_out.setdefault("_line_parts", [])
     # v0.5.3 H4: ensure "dataframe" is in the mode string using set membership;
     # `mode` stays a string because it's passed through to internal calls and
     # recursive polyhandler() invocations that downstream parse_modes() again.
@@ -331,19 +362,27 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
                 else:
                     # print("Feature in collection: ", geom["type"], " and now pts_coords: ", pts_coords)
                     if len(pts_coords) > 0:
-                        df = coords_zprof(np.array(pts_coords), line_id, mode, sample)
+                        part_stats = {} if line_stats is not None else None
+                        df = coords_zprof(
+                            np.array(pts_coords), line_id, mode, sample, stats_out=part_stats
+                        )
+                        if line_stats is not None:
+                            line_stats.append(part_stats)
                         dataframes.append(df)
                         line_id += 1
                         pts_coords = []
 
                     geometry = shape(geom)
                     df, line_id = polyhandler(
-                        geometry, line_id, mode, sample, poly_sample
+                        geometry, line_id, mode, sample, poly_sample, stats_out=stats_out, _stats_root=False
                     )
                     dataframes.append(df)
 
             if len(pts_coords) > 0:
-                df = coords_zprof(np.array(pts_coords), line_id, mode, sample)
+                part_stats = {} if line_stats is not None else None
+                df = coords_zprof(np.array(pts_coords), line_id, mode, sample, stats_out=part_stats)
+                if line_stats is not None:
+                    line_stats.append(part_stats)
                 dataframes.append(df)
                 line_id += 1
         else:
@@ -355,7 +394,7 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
         geom_type = geometry.geom_type
 
         if geom_type in {"Point", "LineString", "LinearRing", "MultiPoint"}:
-            df = process_linestring(geometry, line_id, mode, sample)
+            df = process_linestring(geometry, line_id, mode, sample, stats_list=line_stats)
             dataframes.append(df)
             line_id += 1
         elif geom_type == "Polygon":
@@ -364,7 +403,7 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
             line_id += 1
         elif geom_type == "MultiLineString":
             for part in geometry.geoms:
-                df = process_linestring(part, line_id, mode, sample)
+                df = process_linestring(part, line_id, mode, sample, stats_list=line_stats)
                 dataframes.append(df)
                 line_id += 1
         elif geom_type == "MultiPolygon":
@@ -374,7 +413,9 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
                 line_id += 1
         elif geom_type == "GeometryCollection":
             for part in geometry.geoms:
-                part_df, line_id = polyhandler(part, line_id, mode, sample, poly_sample)
+                part_df, line_id = polyhandler(
+                    part, line_id, mode, sample, poly_sample, stats_out=stats_out, _stats_root=False
+                )
                 dataframes.append(part_df)
 
     if dataframes:
@@ -404,6 +445,10 @@ def polyhandler(geojson_input, line_id=0, mode="", sample=1, poly_sample=5):
                 "polyhandler invariant violated: zonly mode produced distance column"
             )
 
+        if stats_out is not None and _stats_root:
+            _finalize_line_stats(stats_out, stats_out.pop("_line_parts", []))
         return df, line_id
     else:
+        if stats_out is not None and _stats_root:
+            _finalize_line_stats(stats_out, stats_out.pop("_line_parts", []))
         return pl.DataFrame([], schema=consistent_schema), line_id

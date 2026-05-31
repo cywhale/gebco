@@ -22,6 +22,7 @@ The application contract is unchanged from v0.5.2; this version adds:
 """
 import json
 import os
+import random
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -30,6 +31,7 @@ from typing import Optional
 import dask
 import numpy as np
 import xarray as xr
+import zarr
 from fastapi import FastAPI, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -92,12 +94,17 @@ async def lifespan(app: FastAPI):
         decode_cf=False,
         decode_times=False,
     )
+    config.elev_zarr = zarr.open_group(
+        str(_APP_ROOT / "data" / "GEBCO_2026_sub_ice_topo.zarr"),
+        mode="r",
+    )["elevation"]
     arcsec = 15
     config.arc = int(3600 / arcsec)  # 15 arc-second
     config.basex = 180
     config.basey = 90
     yield
     config.ds.close()
+    config.elev_zarr = None
     # v0.5.3 H13: stop the background log listener so reloads don't leak.
     gebco_logger.shutdown()
 
@@ -152,7 +159,7 @@ def geojson_validator(json_obj):
 
 def _error_response(status_code: int, message: str, *, request: Request,
                     t0: float, modes: frozenset, polyMode: bool,
-                    npoints: Optional[int]) -> JSONResponse:
+                    npoints: Optional[int], error_kind: Optional[str] = None) -> JSONResponse:
     """Build a 4xx/5xx JSONResponse and emit a single WARNING log line."""
     elapsed_ms = round((time.monotonic() - t0) * 1000, 2)
     gebco_logger.logger.warning(json.dumps({
@@ -165,8 +172,12 @@ def _error_response(status_code: int, message: str, *, request: Request,
         "polyMode": polyMode,
         "npoints": npoints,
         "elapsed_ms": elapsed_ms,
+        "error_kind": error_kind,
     }))
-    return JSONResponse(status_code=status_code, content={"Error": message})
+    content = {"Error": message}
+    if error_kind is not None:
+        content["kind"] = error_kind
+    return JSONResponse(status_code=status_code, content=content)
 
 
 @app.get(
@@ -215,6 +226,9 @@ def gebco(
     lati: Optional[np.ndarray] = None
     rows: Optional[int] = None
     response: Optional[JSONResponse] = None
+    line_stats: dict | None = (
+        {} if random.random() < config.LOG_SAMPLE_RATE else None
+    )
 
     try:
         if jsonsrc:
@@ -224,7 +238,9 @@ def gebco(
 
             polyMode = geojson_validator(json_obj)
             if polyMode:
-                df1, _ = polyhandler(json_obj, 0, mode if mode else "", 1, poly_sample)
+                df1, _ = polyhandler(
+                    json_obj, 0, mode if mode else "", 1, poly_sample, stats_out=line_stats
+                )
                 # v0.5.3 H5: dead `df1.drop("distance")` block removed.
                 # polyhandler() guarantees no distance column in zonly mode.
                 if "row" in modes:
@@ -271,7 +287,7 @@ def gebco(
                 mode_for_zp = mode or ""
                 if "dataframe" not in modes:
                     mode_for_zp = (mode_for_zp + ",dataframe") if mode_for_zp else "dataframe"
-                df = zprofile(loni, lati, mode_for_zp, 1)
+                df = zprofile(loni, lati, mode_for_zp, 1, stats_out=line_stats)
                 rows = int(df.height)
                 if "row" in modes:
                     out = df.to_dicts()
@@ -288,6 +304,7 @@ def gebco(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, str(exc),
             request=request, t0=t0, modes=modes, polyMode=polyMode,
             npoints=int(loni.size) if loni is not None else None,
+            error_kind=exc.kind,
         )
     except (ValueError, json.JSONDecodeError) as exc:
         return _error_response(
@@ -309,8 +326,12 @@ def gebco(
         "elapsed_ms": elapsed_ms,
     }
     if elapsed_ms > config.SLOW_REQUEST_MS:
+        if line_stats:
+            log_payload["line_stats"] = line_stats
         # Slow requests escalate to WARNING even when INFO is off.
         gebco_logger.logger.warning(json.dumps({**log_payload, "slow": True}))
     else:
+        if line_stats:
+            log_payload["line_stats"] = line_stats
         gebco_logger.logger.info(json.dumps(log_payload))
     return response

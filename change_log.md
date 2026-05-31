@@ -184,9 +184,9 @@
        Fix: pre-compute `multi_batch = n_batches > 1` and gate the gc on
        it, so cross-180 / very-large bbox (D2 cross180_thin) still get
        RSS protection but the common small-polygon path matches v0.5.2
-       latency. Live A/B harness preserved at
-       outputs/wt_api_compare/dev2026/scripts/api_compare_v054_vs_v052.py
-       (in the API-compare git worktree) for codex to re-run after redeploy.
+       latency. Live A/B harness is now preserved in-repo at
+       `dev2026/scripts/api_compare_v054_vs_v052.py` for future deploy
+       verification and public-endpoint comparisons.
     -- W1 / H9 round 4: Replace `np.absolute(scalar)` with builtin `abs()`
        in zprofile + xmeridian hot loops (3x faster per-call on scalars;
        numpy wraps the value before computing absolute). Adds
@@ -279,3 +279,45 @@
          `cross180_thin 4.115 s / 203.6 MB`)
        * Phase H decision: default `GEBCO_MAX_POLYGON_CELLS` tightened
          from provisional `2e9` to `5e7`.
+
+#### ver 0.5.5 Line / MultiLine sparse-read redesign + observability
+
+    -- Add `src/line_planner.py` as the single source of truth for the
+       sample=1 line-cell walk used by `zprofile()` and the dev2026
+       investigation / prototype scripts.
+    -- Integrate a first-pass sparse line reader into `src.zprofile`
+       for `mode=zonly` line / MultiLineString requests. Large line
+       transects now read only touched chunks instead of materialising
+       the entire enclosing bbox before gathering touched cells.
+    -- Cache a raw `zarr.Array` handle for `elevation` in FastAPI
+       lifespan (`config.elev_zarr`) so the production sparse reader
+       reaches parity with the raw prototype path (~21.6–21.8 ms
+       read-stage on q5/q8 benchmark cases).
+    -- Add new env knobs:
+       * `GEBCO_MAX_LINE_CHUNKS` (default `64`) for sparse line guard
+       * `GEBCO_LINE_SPARSE_MIN_CELLS` (default `1_000_000`) for the
+         short-line fallback to the legacy bbox-materialise path
+    -- `BboxTooLarge` now carries `kind` (`bbox_cells`, `line_chunks`,
+       `polygon_cells`), and HTTP 413 responses include that kind for
+       client-side branching and log aggregation.
+    -- Add W3 observability plumbing:
+       * `zprofile(..., stats_out=...)`
+       * `polyhandler(..., stats_out=...)`
+       * per-request structured logs now optionally include `line_stats`
+         (sampled by `GEBCO_LOG_SAMPLE_RATE`)
+       * MultiLineString aggregates include `multi_parts`,
+         `touched_chunks_sum/max`, `bbox_subset_cells_sum`,
+         `projected_bytes_sum/max`, `output_rows_sum/max`, `any_sparse`
+    -- New tests:
+       * `tests/test_line_planner.py`
+       * `tests/test_line_observability.py`
+       * sparse fallback / `kind` assertions in zprofile + bbox guard tests
+    -- Investigation / prototype artefacts added:
+       * `dev2026/scripts/investigate_line_path_caps.py`
+       * `dev2026/scripts/prototype_sparse_line_read.py`
+       * `specs/v0.5.5_line_path_redesign_plan.md`
+    -- Verification:
+       * targeted pytest (`line_planner`, `zprofile`, `bbox_guard`,
+         `line_observability`, `polyhandler`) PASS
+       * `verify_polygon_meridian.py` PASS
+       * `verify_polyhandler_endpoint.py` PASS

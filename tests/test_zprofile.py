@@ -138,3 +138,20 @@ def test_zonly_long_polyline_omits_distance(configured_ds):
     body = _decode(resp)
     assert "distance" not in body
     assert len(body["longitude"]) == len(body["latitude"]) == len(body["z"])
+
+
+def test_sparse_line_falls_back_when_chunk_metadata_missing(configured_ds):
+    loni = np.array([-0.1, 0.1])
+    lati = np.array([-0.05, 0.05])
+    prev_chunks = configured_ds["elevation"].encoding.get("chunks")
+    configured_ds["elevation"].encoding = {}
+    try:
+        resp = zprofile(loni, lati, "zonly", 1)
+    finally:
+        if prev_chunks is None:
+            configured_ds["elevation"].encoding = {}
+        else:
+            configured_ds["elevation"].encoding["chunks"] = prev_chunks
+    body = _decode(resp)
+    assert resp.status_code == 200
+    assert len(body["longitude"]) == len(body["latitude"]) == len(body["z"])

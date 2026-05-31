@@ -25,6 +25,8 @@ dev2026/
 │   ├── verify_api_vs_netcdf.py    # gebco_app code path ↔ NetCDF byte-equal
 │   ├── compare_old_new_api.py     # 2023 API vs 2026 API value diff distribution
 │   └── benchmark_old_new_api.py   # 2023 API vs 2026 API per-point latency
+│   ├── api_compare_v054_vs_v052.py
+│   │                              # live public-endpoint A/B harness
 │   ├── verify_polygon_meridian.py # polygon-MASK consistency + cross-meridian
 │   │                              #   line tests (full resolution, no sample=5;
 │   │                              #   polars-free, runnable in lean envs)
@@ -238,6 +240,19 @@ T1 2304 rows P95=155 m / T4 1152 rows P95=195 m.
 > meaningful consistency signal.
 >
 > **Shapely 2 in production code.** `src/polyhandler.py` now uses native
+
+### 8. Live public A/B (api.odb vs ecodata)
+
+When you need to compare the deployed v0.5.4+ public site against the
+older ecodata deployment, use:
+
+```bash
+cd ~/proj/gebco
+uv run python dev2026/scripts/api_compare_v054_vs_v052.py
+```
+
+The harness keeps payloads intentionally small and focuses on the cases
+that exercise H2 / H3 / H9 / W2-B most directly.
 > Shapely 2 APIs, so polygon endpoint regression in (b) no longer depends on
 > a `pygeos` shim. Keep production dependencies aligned with that design:
 > `pygeos` should stay out of the runtime env.

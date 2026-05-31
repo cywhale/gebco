@@ -7,6 +7,7 @@ from fastapi import status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, ORJSONResponse
 import src.config as config
+from src.line_planner import gridded_arcsec, plan_line_cells
 from src.modes import parse_modes
 from src.xmeridian import crossBoundary
 
@@ -36,20 +37,24 @@ class BboxTooLarge(Exception):
     materialise more cells than the configured cap. Translates to HTTP
     413 in `gebco_app.py` (v0.5.3 H6)."""
 
-    def __init__(self, requested: int, cap: int, *, path: str = "line"):
+    def __init__(
+        self,
+        requested: int,
+        cap: int,
+        *,
+        path: str = "line",
+        kind: str = "bbox_cells",
+    ):
         self.requested = int(requested)
         self.cap = int(cap)
         self.path = path
+        self.kind = kind
         super().__init__(
-            f"bbox too large: {self.path} path would materialise "
-            f"{self.requested:,} cells > cap {self.cap:,}; "
-            f"narrow your range or increase sample=N."
+            f"{self.path} {self.kind} too large: "
+            f"{self.requested:,} > cap {self.cap:,}; "
+            f"narrow your range or "
+            f"{'increase sample=N' if self.kind == 'polygon_cells' else 'reduce span'}."
         )
-
-
-def gridded_arcsec(x, base=90, arc=3600 / 15):
-    idx = (int(x) + base) * arc + math.ceil((x - int(x)) * arc)
-    return idx - 1 if idx > 0 else 0
 
 
 def curDist(loc, dis=np.empty(shape=[0, 1], dtype=float)):
@@ -81,6 +86,86 @@ def _push_dist_buf(loc_buf, dis_buf):
     dis_buf.append(_seg_km(prev[1], prev[0], last[1], last[0]))
 
 
+def _line_chunk_budget(plan, ds) -> tuple[int, int]:
+    """Return (touched_chunks, projected_materialized_cells) for a line plan."""
+    elev = ds["elevation"]
+    lat_chunk, lon_chunk = elev.encoding.get("chunks", (0, 0))
+    if not lat_chunk or not lon_chunk or plan.unique_idx.size == 0:
+        return 0, 0
+    global_lat = plan.unique_idx[:, 0] + plan.mlatbase
+    global_lon = plan.unique_idx[:, 1] + plan.mlonbase
+    chunk_ids = np.stack((global_lat // lat_chunk, global_lon // lon_chunk), axis=1)
+    touched_chunks = np.unique(chunk_ids, axis=0).shape[0]
+    projected_cells = int(touched_chunks * lat_chunk * lon_chunk)
+    return int(touched_chunks), projected_cells
+
+
+def _read_sparse_line_values(ds, plan) -> np.ndarray | None:
+    """Read only the touched chunks for a planned line and reconstruct order.
+
+    Returns ``None`` when chunk metadata is unavailable so callers can
+    fall back to the legacy bbox-materialise path instead of surfacing a
+    500 to clients.
+    """
+    elev = ds["elevation"]
+    lat_chunk, lon_chunk = elev.encoding.get("chunks", (0, 0))
+    if not lat_chunk or not lon_chunk:
+        return None
+    if plan.unique_idx.size == 0:
+        return np.empty((0,), dtype=elev.dtype)
+
+    global_lat = plan.unique_idx[:, 0] + plan.mlatbase
+    global_lon = plan.unique_idx[:, 1] + plan.mlonbase
+    chunk_row = global_lat // lat_chunk
+    chunk_col = global_lon // lon_chunk
+    chunk_ids = np.stack((chunk_row, chunk_col), axis=1)
+
+    by_chunk: dict[tuple[int, int], list[int]] = {}
+    for pos, cid in enumerate(map(tuple, chunk_ids)):
+        by_chunk.setdefault(cid, []).append(pos)
+
+    uniq_values = np.empty((plan.unique_idx.shape[0],), dtype=elev.dtype)
+    raw_elev = getattr(config, "elev_zarr", None)
+    for (cr, cc), positions in by_chunk.items():
+        lat0 = int(cr * lat_chunk)
+        lat1 = min(lat0 + lat_chunk, elev.shape[0])
+        lon0 = int(cc * lon_chunk)
+        lon1 = min(lon0 + lon_chunk, elev.shape[1])
+        if raw_elev is not None:
+            chunk = raw_elev[lat0:lat1, lon0:lon1]
+        else:
+            chunk = elev.isel(lat=slice(lat0, lat1), lon=slice(lon0, lon1)).values
+        pos_arr = np.asarray(positions, dtype=np.int32)
+        local_lat = global_lat[pos_arr] - lat0
+        local_lon = global_lon[pos_arr] - lon0
+        uniq_values[pos_arr] = chunk[local_lat, local_lon]
+    return uniq_values[plan.inverse]
+
+
+def _record_line_stats(
+    stats_out: dict | None,
+    *,
+    use_sparse: bool,
+    plan,
+    touched_chunks: int,
+    projected_cells: int,
+    output_rows: int,
+) -> None:
+    if stats_out is None:
+        return
+    stats_out.update(
+        {
+            "use_sparse": bool(use_sparse),
+            "bbox_subset_cells": int(plan.bbox_subset_cells),
+            "touched_chunks": int(touched_chunks),
+            "projected_cells": int(projected_cells),
+            "projected_bytes": int(projected_cells * 2),
+            "unique_cells": int(plan.unique_idx.shape[0]),
+            "output_rows": int(output_rows),
+        }
+    )
+
+
 def zdata_bbox(bbox, crosses_180=False, isRight=False, sample=5):
     ds = config.ds  # config.ds is the global variable of zarr dataset
     arc = config.arc
@@ -107,7 +192,12 @@ def zdata_bbox(bbox, crosses_180=False, isRight=False, sample=5):
         (rgtx - lftx) * ((maxy + 1.5 / arc) - (miny - 0.25 / arc)) * arc * arc
     )
     if raw_cells > config.MAX_POLYGON_CELLS:
-        raise BboxTooLarge(raw_cells, config.MAX_POLYGON_CELLS, path="polygon")
+        raise BboxTooLarge(
+            raw_cells,
+            config.MAX_POLYGON_CELLS,
+            path="polygon",
+            kind="polygon_cells",
+        )
     # print("Debug left, right to slice: ", lftx, rgtx, " and bbox: ", bbox, " and condition: ", crosses_180, isRight)
     subset_data = ds.sel(
         lon=slice(lftx, rgtx, sample),
@@ -121,7 +211,7 @@ def empty_data():
     return pl.DataFrame(schema=_columns)
 
 
-def zprofile(loni, lati, mode, sample=1):
+def zprofile(loni, lati, mode, sample=1, *, stats_out: dict | None = None):
     # global ds #move to config.py
     # global arcsec #15
     # global arc
@@ -208,6 +298,54 @@ def zprofile(loni, lati, mode, sample=1):
                     }
                 )
     else:
+        # v0.5.5 W2 first-pass integration: line / MultiLineString requests
+        # in zonly mode can use the sparse chunk-aware reader. Point mode and
+        # distance-producing paths stay on the legacy implementation for now.
+        if zmode != "point" and zonly:
+            plan = plan_line_cells(loni, lati, arc, basex, basey)
+            loc1 = plan.loc
+            bbox_subset_cells = plan.bbox_subset_cells
+
+            use_sparse = bbox_subset_cells >= config.LINE_SPARSE_MIN_CELLS
+            if use_sparse:
+                touched_chunks, projected_cells = _line_chunk_budget(plan, ds)
+                if config.MAX_LINE_CHUNKS > 0 and touched_chunks > config.MAX_LINE_CHUNKS:
+                    raise BboxTooLarge(
+                        projected_cells,
+                        config.MAX_LINE_CHUNKS
+                        * ds["elevation"].encoding["chunks"][0]
+                        * ds["elevation"].encoding["chunks"][1],
+                        path="line",
+                        kind="line_chunks",
+                    )
+                xt1 = _read_sparse_line_values(ds, plan)
+                if xt1 is not None:
+                    _record_line_stats(
+                        stats_out,
+                        use_sparse=True,
+                        plan=plan,
+                        touched_chunks=touched_chunks,
+                        projected_cells=projected_cells,
+                        output_rows=plan.loc.shape[0],
+                    )
+                    if "truncate" in modes:
+                        loc1[:, 0] = np.round(loc1[:, 0], 5)
+                        loc1[:, 1] = np.round(loc1[:, 1], 5)
+                    if "lon360" in modes:
+                        loc1[:, 0] = np.where(loc1[:, 0] < 0, loc1[:, 0] + 360, loc1[:, 0])
+
+                    if format == "row" or format == "dataframe":
+                        df1 = pl.DataFrame({"longitude": loc1[:, 0], "latitude": loc1[:, 1], "z": xt1})
+                    else:
+                        out = jsonable_encoder(
+                            {"longitude": loc1[:, 0].tolist(), "latitude": loc1[:, 1].tolist(), "z": xt1.tolist()}
+                        )
+                    if format == "dataframe":
+                        return df1
+                    if format == "row":
+                        return ORJSONResponse(content=df1.to_dicts())
+                    return ORJSONResponse(content=out)
+
         if zmode == "point":
             lonk = loni
             latk = lati
@@ -239,7 +377,12 @@ def zprofile(loni, lati, mode, sample=1):
         mlat1_est = np.max(latk) + 1.5 / arc
         _bbox_cells = (mlon1_est - mlon0) * (mlat1_est - mlat0) * arc * arc
         if _bbox_cells > config.MAX_BBOX_CELLS_LINE:
-            raise BboxTooLarge(_bbox_cells, config.MAX_BBOX_CELLS_LINE, path="line")
+            raise BboxTooLarge(
+                _bbox_cells,
+                config.MAX_BBOX_CELLS_LINE,
+                path="line",
+                kind="bbox_cells",
+            )
         # mlat1 = np.max(latg)
         # if do subsetting dataset, reference-0-x,y should be biased
         mlonbase = gridded_arcsec(mlon0, basex, arc) if subsetFlag else 0
@@ -457,6 +600,17 @@ def zprofile(loni, lati, mode, sample=1):
         )
         xt1 = ds_s1["elevation"].values[tuple(idx1.T)]
         ds_s1.close()
+        if stats_out is not None:
+            plan = plan_line_cells(loni, lati, arc, basex, basey)
+            touched_chunks, projected_cells = _line_chunk_budget(plan, ds)
+            _record_line_stats(
+                stats_out,
+                use_sparse=False,
+                plan=plan,
+                touched_chunks=touched_chunks,
+                projected_cells=projected_cells,
+                output_rows=plan.loc.shape[0],
+            )
 
         # 202502 add truncated mode: Apply truncation if "truncate" mode is enabled
         if "truncate" in modes:
