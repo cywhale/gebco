@@ -355,6 +355,12 @@ Both public GEBCO API VMs are currently served from:
   * VM37 (`api.odb`): `API_SERVERS=https://api.odb.ntu.edu.tw`
   * VM34 (`ecodata`): `API_SERVERS=https://ecodata.odb.ntu.edu.tw`
   * both: `API_VERSION=1.1.0`, `GEBCO_LOG_SAMPLE_RATE=0`
+  * **temporary exception on VM34 only**: `GEBCO_MAX_POLYGON_CELLS=2000000000`
+    for frontend compatibility. Reason: the ODB map frontend currently assumes
+    large polygon requests either return data or a client-side size warning; it
+    does not yet handle backend `413` gracefully. Once the frontend handles
+    `413` correctly, remove this override and return VM34 to the branch default
+    (`5e7`).
 
 Quick verification command on either VM:
 

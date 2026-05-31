@@ -333,3 +333,7 @@
          is correct
        * `dev2026/scripts/api_compare_v054_vs_v052.py` is now a generic
          public A/B smoke harness despite its historical filename
+       * temporary frontend-compatibility exception on VM34 only:
+         `GEBCO_MAX_POLYGON_CELLS=2000000000` in `.env` so the ODB map
+         frontend receives data instead of an unhandled `413` on very
+         large polygons. VM37 keeps the stricter branch default `5e7`.

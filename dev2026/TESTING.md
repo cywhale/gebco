@@ -1097,3 +1097,33 @@ So the final deployed state is:
 * `Q8` is accepted on both
 * the practical v0.5.4 breaking change (reasonable long transect rejected by
   early bbox cap) is resolved in production
+
+### I6. Temporary VM34 polygon-cap compatibility override
+
+After both VMs were on v0.5.5, a separate frontend integration issue appeared:
+the ODB map frontend behind `service.oc.ntu.edu.tw/data/gebco` did not handle
+backend `413` gracefully for very large polygon requests. One real user query
+returned:
+
+* `413` with branch default `GEBCO_MAX_POLYGON_CELLS=5e7`
+* `200` when the same code was run with `GEBCO_MAX_POLYGON_CELLS=2e9`
+
+Measured on VM34 with the exact polygon payload in a temporary loopback probe:
+
+| cap | status | wall | bytes | rows |
+|-----|--------|------|-------|------|
+| `5e7` | 413 | immediate | n/a | n/a |
+| `2e9` | 200 | ~6.3 s | ~279 MB | 10,729,265 |
+
+This is **not** a claim that the payload is frontend-safe — it is far beyond
+the frontend's own 1M-point rendering limit. The temporary override exists
+only so the frontend can receive data (or apply its own client-side cap path)
+instead of crashing on an unhandled `413`.
+
+Operational decision taken on `2026-05-31`:
+
+* VM34 / `ecodata`: set `.env` `GEBCO_MAX_POLYGON_CELLS=2000000000`
+* VM37 / `api.odb`: keep the branch default `5e7`
+
+This is an intentionally asymmetric policy and should be revisited after the
+frontend adds explicit `413` handling.
