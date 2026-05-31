@@ -321,3 +321,15 @@
          `line_observability`, `polyhandler`) PASS
        * `verify_polygon_meridian.py` PASS
        * `verify_polyhandler_endpoint.py` PASS
+    -- Production rollout outcome (`2026-05-31`):
+       * VM34 (`ecodata`) and VM37 (`api.odb`) are both now on branch
+         `gebco_2026_perf_v054`, revision `ad4179c`, served from the
+         root repo via pm2 → `./.venv/bin/gunicorn`
+       * the original near-cap `Q8` diagonal transect now returns `200`
+         on both public sites instead of the v0.5.4-era premature `413`
+       * rollout caveat learned the hard way: if `ps -ef` still shows a
+         stale `/home/odbadmin/.pyenv/.../gunicorn` bound to `8013`, you
+         are not testing the intended deployment even if the repo checkout
+         is correct
+       * `dev2026/scripts/api_compare_v054_vs_v052.py` is now a generic
+         public A/B smoke harness despite its historical filename

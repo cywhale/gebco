@@ -561,8 +561,9 @@ Verification after the normalisation:
 | Public endpoint | `https://api.odb.ntu.edu.tw/gebco?lon=122.36&lat=25.02&mode=point` → HTTP 200, `z=-1173` |
 | Public OpenAPI server | `/gebco/openapi.json` contains `https://api.odb.ntu.edu.tw` |
 
-This is the current production state after merge: VM37 serves GEBCO_2026 from
-the root checkout on `main`, not from `.stage_v051`.
+This was the production state after the v0.5.2 merge on `2026-05-27`: VM37
+served GEBCO_2026 from the root checkout on `main`, not from `.stage_v051`.
+See Phase I below for the later v0.5.5 rollout state on both VMs.
 
 
 
@@ -619,8 +620,6 @@ re-run the same way; see Phase A above.
     - As a final belt-and-suspenders, running a `curl` against a known
       polygon on the production Pipenv env remains good practice before
       cutting the release.
-* OpenAPI version in `gebco_app.py` is still `"1.0.0"` — bump to `1.1.0` is
-  left to the merge PR.
 * The reported sandbox versions (`zarr==3.2.1`, `numcodecs==0.16.5`) deviate
   from the canonical `uv sync` resolution (`zarr==2.18.7`, `numcodecs==0.15.1`).
   See the environment table above for the reason. Re-running the suite on a
@@ -975,3 +974,126 @@ uv run --group dev pytest tests/ -q
 # expected: 100+ passed (modes / validation / lon360 / jsonsrc / logger /
 #           xmeridian / zprofile / polyhandler / bbox_guard)
 ```
+
+---
+
+## Phase I — v0.5.5 line sparse-read rollout and public parity
+
+This phase covers the post-v0.5.4 line-path redesign (`gebco_2026_perf_v054`)
+that changed the effective line cap behaviour. The important operational fact
+is that **both public VMs now run the same v0.5.5 code path**:
+
+* VM37 / `api.odb.ntu.edu.tw`
+* VM34 / `ecodata.odb.ntu.edu.tw`
+
+Both serve from the root checkout (`~/python/gebco`), branch
+`gebco_2026_perf_v054`, revision `ad4179c`, via pm2 → root `.venv` gunicorn.
+
+### I1. Production reality check that caught a real rollout hazard
+
+The first VM34 cutover looked healthy for simple point smoke, but `Q4 lon360`
+still returned `500`. Root cause was **not** the branch code. The VM was still
+serving an old `pyenv`/gunicorn process on `127.0.0.1:8013`; pm2 metadata had
+not actually taken over the listener yet. Once pm2 was restarted explicitly via
+`conf/ecosystem.config.js`, loopback `Q4` immediately became `200`.
+
+Practical lesson for future agents:
+
+* do **not** trust git branch state or file contents alone after deployment
+* always verify the live listener with both:
+  * `pm2 describe gebco`
+  * `ps -ef | grep gunicorn | grep 8013`
+* if you still see `/home/odbadmin/.pyenv/.../gunicorn`, you are not testing
+  the intended runtime even if the repo checkout is correct
+
+### I2. Public A/B after VM34 cutover (v0.5.4 baseline vs v0.5.5 candidate)
+
+Harness:
+
+```bash
+cd ~/proj/gebco
+uv run python dev2026/scripts/api_compare_v054_vs_v052.py
+```
+
+At this moment the filename was historical. The actual comparison was:
+
+* `api.odb` = v0.5.4 baseline
+* `ecodata` = v0.5.5 candidate
+
+Key result:
+
+* `Q1–Q7` normal-success cases returned byte-identical bodies between the two
+  public sites where behaviour was expected to match
+* `Q5` large line and `Q6` large `MultiLineString` were dramatically faster on
+  the v0.5.5 site
+* `Q8` near-cap diagonal transect returned `200` on v0.5.5 while the v0.5.4
+  site still returned `413`
+
+This is the evidence that v0.5.5 is not merely "not slower"; it resolves a
+practical breaking change introduced by the v0.5.4-era line bbox proxy.
+
+### I3. VM34 stability soak before VM37 rollout
+
+Loopback-only stability script (10 repeats each for Q1/Q4/Q5/Q6, then small
+concurrency, then `pm2 restart gebco --update-env` and re-check):
+
+| Case | repeated median | repeated P95 | bytes |
+|------|------------------|--------------|-------|
+| Q1 cross-0 line | 12.6 ms | 13.1 ms | 42,675 |
+| Q4 lon360       | 15.6 ms | 72.8 ms | 62,895 |
+| Q5 large line   | 90.4 ms | 95.3 ms | 647,512 |
+| Q6 MultiLineString | 165.4 ms | 165.9 ms | 1,252,806 |
+
+Small concurrency:
+
+| Case | concurrency | ok | round wall | median req |
+|------|-------------|----|------------|------------|
+| Q5 | 4 | 4/4 | 210.1 ms | 202.9 ms |
+| Q5 | 6 | 6/6 | 211.8 ms | 199.6 ms |
+| Q6 | 4 | 4/4 | 365.2 ms | 358.7 ms |
+| Q6 | 6 | 6/6 | 479.3 ms | 457.9 ms |
+
+Restart safety (`pm2 restart gebco --update-env`):
+
+| Case | status | wall |
+|------|--------|------|
+| Q1 | 200 | 208.8 ms |
+| Q4 | 200 | 99.0 ms |
+| Q5 | 200 | 101.9 ms |
+| Q6 | 200 | 166.4 ms |
+
+No new traceback appeared in `tmp/err.log`; only normal gunicorn shutdown /
+startup lines were observed. VM34 staging listener `.stage_v055:18014` was
+removed after the soak to avoid future confusion.
+
+### I4. VM37 rollout to v0.5.5
+
+VM37 was then updated to the same branch / revision and restarted through pm2.
+The first smoke immediately confirmed:
+
+* point mode `200`
+* `Q1` cross-0 line `200`
+* `Q4` lon360 `200`
+
+The important follow-up was `Q8`. An early public check still saw `413`; after
+completing the real pm2 cutover and confirming the root `.venv` gunicorn was
+bound to `8013`, both loopback and public checks returned `200`.
+
+This means the earlier `413` was a deployment-state artefact, not a remaining
+code bug.
+
+### I5. Final public parity (both VMs on v0.5.5)
+
+Final direct public check for the original `Q8` near-cap transect:
+
+```text
+https://api.odb.ntu.edu.tw/gebco?...Q8...      -> 200, ~134.7 ms
+https://ecodata.odb.ntu.edu.tw/gebco?...Q8...  -> 200, ~108.1 ms
+```
+
+So the final deployed state is:
+
+* both public VMs are on v0.5.5
+* `Q8` is accepted on both
+* the practical v0.5.4 breaking change (reasonable long transect rejected by
+  early bbox cap) is resolved in production

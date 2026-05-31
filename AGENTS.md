@@ -40,11 +40,16 @@ gebco/
 
 ## Branch model
 
-* **main** — current production branch again as of `2026-05-27` (VM37 has been
-  normalised back from staging checkout to the root repo on `main`).
-* **gebco_2026_api** — upgrade branch used to develop and stage the GEBCO_2026
-  rollout before merge. Keep it until at least one full GEBCO release cycle
-  because it captures the conversion/review history in a linear branch.
+* **main** — merged stable line through v0.5.2 (GEBCO_2026 rollout +
+  deployment hardening + metadata cleanup). Use it as the conservative
+  baseline when reviewing v0.5.4/v0.5.5 performance work.
+* **gebco_2026_api** — historical upgrade branch used to develop and stage the
+  GEBCO_2026 rollout before merge. Keep it until at least one full GEBCO
+  release cycle because it captures the conversion/review history in a linear
+  branch.
+* **gebco_2026_perf_v054** — current production branch on both public VMs as of
+  `2026-05-31`. Contains v0.5.4 polygon performance hardening and v0.5.5 line /
+  MultiLineString sparse-read redesign.
 * Historical: `dev/` keeps the 2022→2023 Jupyter record as-is. Don't port it
   forward; mirror the pattern in `dev2026/` (new dir per data-version bump).
 
@@ -187,6 +192,8 @@ production Zarr; the ice_surface variant is only useful for schema checks.
     | `GEBCO_JSONSRC_CONNECT_TIMEOUT_S` | `2` | URL connect timeout |
     | `GEBCO_JSONSRC_READ_TIMEOUT_S` | `5` | URL read timeout |
     | `GEBCO_MAX_BBOX_CELLS_LINE` | `200000000` (2e8) | line/point path bbox cap; raises 413 above |
+    | `GEBCO_MAX_LINE_CHUNKS` (v0.5.5) | `64` | sparse `mode=zonly` line / MultiLineString chunk-budget guard; raises 413 above |
+    | `GEBCO_LINE_SPARSE_MIN_CELLS` (v0.5.5) | `1000000` (1e6) | below this bbox-subset size, keep the legacy direct bbox materialise path for short lines |
     | `GEBCO_MAX_POLYGON_CELLS` | `50000000` (5e7) | polygon path raw-bbox cap; raises 413 above |
     | `GEBCO_DASK_POOL_SIZE` | `4` | dask multiprocessing pool; set `0`/`1` to disable |
     | `GEBCO_LOG_LEVEL` | `WARNING` | structured app log level |
@@ -236,6 +243,37 @@ production Zarr; the ice_surface variant is only useful for schema checks.
     `main`: sparse `206.26 ms → 22.94 ms` (`8.99×`), dense
     `237.44 ms → 15.71 ms` (`15.11×`). Adds `pyproj` to root
     `pyproject.toml` runtime deps.
+
+    **v0.5.5 status:** line / `MultiLineString` requests in `mode=zonly`
+    now have a sparse, chunk-aware read path. This is the key fix for the
+    v0.5.4-era `Q8` regression where scientifically reasonable long
+    transects were rejected solely by the early bbox proxy. Important
+    details:
+    * `sample` is intentionally a **polygon-only** control. For point/line/
+      `MultiLineString`, the production API still behaves as `sample=1`.
+    * The sparse path only applies to `mode=zonly` line-like requests for
+      now. Distance-producing line mode still uses the legacy bbox
+      materialise path.
+    * The real bottleneck was not `ds.sel(...)` itself; it was
+      `ds_s1["elevation"].values`, which materialised the full bbox subset
+      before gathering touched cells. v0.5.5 replaces that with
+      planner-driven chunk reads against a cached raw Zarr handle
+      (`config.elev_zarr`) when the request is large enough to benefit.
+    * First-pass line guard is now two-layered: the old
+      `GEBCO_MAX_BBOX_CELLS_LINE` remains as the legacy / non-sparse guard,
+      while sparse `zonly` lines are primarily limited by
+      `GEBCO_MAX_LINE_CHUNKS`.
+    * Observability is part of the design. `zprofile(..., stats_out=...)`
+      and `polyhandler(..., stats_out=...)` emit per-request line stats
+      (bbox subset cells, touched chunks, projected bytes, output rows,
+      aggregate MultiLineString summaries) when sampling is enabled.
+      Production currently sets `GEBCO_LOG_SAMPLE_RATE=0` on both VMs to
+      avoid extra logging overhead on the hot path; raise it temporarily
+      during investigation windows.
+    * Verified deploy result on both public VMs (`api.odb`, `ecodata`) at
+      `ad4179c`: the former near-cap `Q8` diagonal transect now returns
+      `200` on both loopback and public endpoints rather than the
+      v0.5.4-era premature `413`.
 
 13. **mode tokens are now a set, not a substring search** (v0.5.3 H4).
     `src/modes.py` exposes `parse_modes(mode_str) -> frozenset[str]` and
@@ -300,38 +338,47 @@ Used for 2026; reuse for 2027+.
 * `decode_cf=False` everywhere on read — z is raw int16 from the grid. Don't
   let xarray rescale or fillna; the production code assumes raw integers.
 
-## Current deploy reality (VM37, 2026-05-27)
+## Current deploy reality (VM34 + VM37, 2026-05-31)
 
-VM37 production is currently served from:
+Both public GEBCO API VMs are currently served from:
 
 * checkout: `/home/odbadmin/python/gebco`
-* branch: `main`
+* branch: `gebco_2026_perf_v054`
+* revision: `ad4179c` (v0.5.5 line sparse reads + observability)
 * runtime: root `.venv` built by `uv sync --python 3.11`
 * polygon dependency: installed post-sync via
   `./scripts/install_polars_variant.sh auto`
 * process manager: `pm2`
 * launcher: `conf/ecosystem.config.js` using `/bin/bash -lc` to invoke
   `./.venv/bin/gunicorn ... --keyfile conf/privkey.pem --certfile conf/fullchain.pem`
+* env:
+  * VM37 (`api.odb`): `API_SERVERS=https://api.odb.ntu.edu.tw`
+  * VM34 (`ecodata`): `API_SERVERS=https://ecodata.odb.ntu.edu.tw`
+  * both: `API_VERSION=1.1.0`, `GEBCO_LOG_SAMPLE_RATE=0`
 
-Quick verification command on VM37:
+Quick verification command on either VM:
 
 ```bash
 pm2 describe gebco | egrep 'exec cwd|script path|script args|revision|branch'
 ```
 
-Expected signals for the new deployment:
+Expected signals for the current deployment:
 
 * `exec cwd` points at `/home/odbadmin/python/gebco`
 * `script args` contains `./.venv/bin/gunicorn`
-* `branch` is `main`
+* `branch` is `gebco_2026_perf_v054`
 * point smoke:
   `curl -sk --get 'https://127.0.0.1:8013/gebco' --data-urlencode 'lon=122.36' --data-urlencode 'lat=25.02' --data-urlencode 'mode=point'`
   returns `z=-1173`
+* near-cap line smoke:
+  `curl -sk --get 'https://127.0.0.1:8013/gebco' --data-urlencode 'lon=-155,-143,-131,-118,-105,-92' --data-urlencode 'lat=-30,-18,-6,6,18,28' --data-urlencode 'mode=zonly'`
+  returns `200`
 
-If you see `.stage_v051` in `exec cwd`, you're looking at the historical
-staging checkout used during the cutover window on `2026-05-26`. If you still
-see `/home/odbadmin/.pyenv/.../gunicorn`, you're looking at the pre-v0.5.1
-legacy runtime.
+If you see `.stage_v051` or `.stage_v055` in `exec cwd`, you're looking at a
+historical staging checkout. If you still see `/home/odbadmin/.pyenv/.../gunicorn`,
+you're looking at a stale legacy runtime and **not** the intended deployment;
+this exact mismatch caused the first false-negative `Q4 lon360` diagnosis
+during the VM34 rollout.
 
 ## Where to ask "what did the last agent do?"
 

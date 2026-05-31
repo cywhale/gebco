@@ -1,16 +1,21 @@
-"""Live A/B comparison: api.odb.ntu.edu.tw (v0.5.4+) vs ecodata.odb.ntu.edu.tw (v0.5.2).
+"""Live public A/B comparison between api.odb.ntu.edu.tw and ecodata.odb.ntu.edu.tw.
 
 This script hits both public endpoints with a small curated query set
 that exercises the v0.5.3 / v0.5.4 changes most directly while keeping
 payloads small enough for routine smoke use.
 
+The filename is historical. Treat this as a generic public-endpoint smoke
+harness; do not infer the live deployed versions from the filename.
+
 Queries:
-  Q1 — H9 sparse long polyline (20° span, sample=1)
-  Q2 — W2-B polygon near Taiwan (sample=1)
+  Q1 — cross-0 line
+  Q2 — Taiwan polygon (sample=1)
   Q3 — cross-180 Fiji polygon (sample=5)
-  Q4 — H3 lon360 input acceptance
-  Q5 — H2 out-of-range lon rejection
-  Q6 — small polygon baseline (sample=5)
+  Q4 — lon360 input acceptance
+  Q5 — large multi-vertex line
+  Q6 — large MultiLineString
+  Q7 — small polygon baseline (sample=5)
+  Q8 — near-cap diagonal transect
 
 Run:
     uv run python dev2026/scripts/api_compare_v054_vs_v052.py
@@ -30,8 +35,8 @@ from typing import Optional
 
 
 ENDPOINTS = {
-    "v0.5.4+ (api.odb)": "https://api.odb.ntu.edu.tw/gebco",
-    "v0.5.2 (ecodata.odb)": "https://ecodata.odb.ntu.edu.tw/gebco",
+    "api.odb": "https://api.odb.ntu.edu.tw/gebco",
+    "ecodata.odb": "https://ecodata.odb.ntu.edu.tw/gebco",
 }
 
 
@@ -257,11 +262,13 @@ def _run_query(query: dict, trials: int = 3) -> dict:
             data_verdict = "fingerprint match"
         else:
             data_verdict = "DIFFER"
-        verdict = f"data {data_verdict}  /  v0.5.4 is {speed_ratio:.2f}× v0.5.2 wall"
+        names = list(summary["endpoints"].keys())
+        verdict = f"data {data_verdict}  /  {names[0]} is {speed_ratio:.2f}× {names[1]} wall"
     else:
-        v054_status = eps[0]["status"] if eps else "?"
-        v052_status = eps[1]["status"] if len(eps) > 1 else "?"
-        verdict = f"endpoint statuses differ: v0.5.4={v054_status} v0.5.2={v052_status}"
+        left_status = eps[0]["status"] if eps else "?"
+        right_status = eps[1]["status"] if len(eps) > 1 else "?"
+        names = list(summary["endpoints"].keys())
+        verdict = f"endpoint statuses differ: {names[0]}={left_status} {names[1]}={right_status}"
     summary["verdict"] = verdict
     print(f"  -> verdict: {verdict}")
     return summary
@@ -269,7 +276,7 @@ def _run_query(query: dict, trials: int = 3) -> dict:
 
 def main() -> int:
     print("=" * 78)
-    print("v0.5.4+ (api.odb.ntu.edu.tw) vs v0.5.2 (ecodata.odb.ntu.edu.tw)")
+    print("api.odb.ntu.edu.tw vs ecodata.odb.ntu.edu.tw")
     print("=" * 78)
     print("trials per query: 3   (median + P95 reported)")
     print(f"queries: {len(QUERIES)}")

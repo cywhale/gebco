@@ -251,24 +251,28 @@ cd ~/proj/gebco
 uv run python dev2026/scripts/api_compare_v054_vs_v052.py
 ```
 
-The harness keeps payloads intentionally small and focuses on the cases
-that exercise H2 / H3 / H9 / W2-B most directly.
+The filename is historical; the harness now acts as a **generic public
+endpoint A/B smoke** between `api.odb.ntu.edu.tw` and
+`ecodata.odb.ntu.edu.tw`. It keeps payloads intentionally small and
+focuses on the cases that exercise H2 / H3 / H9 / W2-B / v0.5.5 line
+sparse-read behaviour most directly.
 > Shapely 2 APIs, so polygon endpoint regression in (b) no longer depends on
 > a `pygeos` shim. Keep production dependencies aligned with that design:
 > `pygeos` should stay out of the runtime env.
 
 ## What stays out of scope (intentionally)
 
-* `../Pipfile` / `../requirements.txt` are **not** modified — production
-  runtime stays on Python 3.11 + zarr 2.18.6 + Pipenv. The dev2026 venv exists
-  so we can use Python 3.13 + uv for writing without touching production.
+* `../Pipfile` / `../requirements.txt` are kept for legacy reference, but the
+  current production runtime is the root `uv`-managed `.venv` on Python 3.11.
+  The dev2026 venv exists so we can use Python 3.13 + uv for writing without
+  touching the production runtime.
 * The old `../dev/read_gebco_raw01.ipynb` is kept verbatim as the historical
   record of the 2022→2023 upgrade. New releases get a new directory (this
   one), not edits to the old one.
 * `../README.md` is end-user facing and only gets touched once the release
   ships.
 
-## Production deployment notes (v0.5.1 staging plan)
+## Production deployment notes
 
 The production deployment path is now:
 
@@ -302,7 +306,7 @@ POLARS_PACKAGE=polars-lts-cpu ./scripts/install_polars_variant.sh
 POLARS_VERSION=1.26.0 ./scripts/install_polars_variant.sh auto
 ```
 
-### VM37 no-downtime staging recipe
+### Historical VM37 no-downtime staging recipe
 
 To avoid touching the live `pm2` process (`gebco` on `127.0.0.1:8013`),
 stage the upgrade in a separate checkout and run a loopback-only test port:
@@ -362,8 +366,8 @@ PY
 ```
 
 VM37 staging was verified this way on `2026-05-26` without restarting `pm2`
-or touching `127.0.0.1:8013`. After acceptance, production was normalised
-back to the root checkout on `main` (`~/python/gebco`) on `2026-05-27`.
+or touching `127.0.0.1:8013`. This section is kept as the historical
+cutover recipe; current production no longer serves from `.stage_v051`.
 
 ### Confirm which gebco pm2 is running
 
@@ -373,11 +377,11 @@ On VM37, the quickest check is:
 pm2 describe gebco | egrep 'exec cwd|script path|script args|revision|branch'
 ```
 
-If current production has already been normalised after cutover, expect:
+For the current production runtime, expect:
 
 * `exec cwd` under `~/python/gebco`
 * `script args` containing `./.venv/bin/gunicorn`
-* `branch = main`
+* `branch = gebco_2026_perf_v054` (as of the v0.5.5 rollout)
 
 If you instead see `.stage_v051`, you're looking at the temporary staging
 checkout used during the GEBCO_2026 cutover. In either case, seeing
