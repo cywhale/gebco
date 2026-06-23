@@ -31,6 +31,7 @@
 **/temp
 **/tmp
 **/tmp.*
+outputs/
 **/*.grib
 **/*.save
 **/*.bak

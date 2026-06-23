@@ -280,6 +280,27 @@
        * Phase H decision: default `GEBCO_MAX_POLYGON_CELLS` tightened
          from provisional `2e9` to `5e7`.
 
+#### ver 0.5.6 Cross-180 correctness fix + deploy cleanup
+
+    -- Fix cross-180 antimeridian line reads in non-`zonly` modes: the old
+       int16 cell-index buffer wrapped wide bboxes to the wrong ocean. The
+       line path now uses int64 indices, so 179°E→180° and 179°E→-180°
+       return the same depths again.
+    -- Apply `truncate` / `lon360` normalization to the single-point branch,
+       so one-point queries echo coordinates in the same convention as
+       multi-point line queries.
+    -- Reuse the touched-chunk read path for cross-180 non-`zonly` lines,
+       so short antimeridian transects are no longer rejected by the old
+       bbox-only 413 guard. Large lines still fail with a chunk-budget 413.
+    -- Remove the xmeridian divide-by-zero warning on horizontal segments by
+       computing the anti-meridian delta lazily.
+    -- Add `pyproj` to the dev2026 tooling env so the verification and
+       benchmark scripts can run in a clean `uv sync`.
+    -- Add regression coverage for the antimeridian overflow, the single-point
+       output normalization, and the chunk-read guard path.
+    -- Document the fix set in `specs/bug_report_20260603.md` for future
+       review / deploy handoff.
+
 #### ver 0.5.5 Line / MultiLine sparse-read redesign + observability
 
     -- Add `src/line_planner.py` as the single source of truth for the

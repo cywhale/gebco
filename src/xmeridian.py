@@ -75,7 +75,10 @@ def crossBoundary(lon, lat):
             m = (lat[idx1] - lat[idx0]) / (lon[idx1] - lon[idx0])
             b = lat[idx0] - m * lon[idx0]  # y = mx + b
             absm = abs(m)
-            absxdelta = abs((0.499 / arc) / m)
+            # absxdelta is only consumed in the `absm > 1` branches below;
+            # computing it eagerly divided by zero (harmless inf) for the
+            # common horizontal-segment (m == 0) case. Guard keeps it lazy.
+            absxdelta = abs((0.499 / arc) / m) if absm > 1 else 0.0
 
             if np.sign(newx_buf[-1]) == -1:
                 # both-ends closer to zero
@@ -137,7 +140,9 @@ def crossBoundary(lon, lat):
             lonat0 = basex - endat[0] if endat[0] >= 0 else -basex - endat[0]
             lonat1 = basex - endat[1] if endat[1] >= 0 else -basex - endat[1]
             absm = abs(m)
-            absxdelta = abs((0.499 / arc) / m)
+            # See note above: only used when absm > 1, so guard against the
+            # m == 0 divide-by-zero (RuntimeWarning) on horizontal segments.
+            absxdelta = abs((0.499 / arc) / m) if absm > 1 else 0.0
 
             if np.sign(newx_buf[-1]) == -1:
                 if (

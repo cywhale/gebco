@@ -251,9 +251,16 @@ production Zarr; the ice_surface variant is only useful for schema checks.
     details:
     * `sample` is intentionally a **polygon-only** control. For point/line/
       `MultiLineString`, the production API still behaves as `sample=1`.
-    * The sparse path only applies to `mode=zonly` line-like requests for
-      now. Distance-producing line mode still uses the legacy bbox
-      materialise path.
+    * The sparse path originally applied only to `mode=zonly` line-like
+      requests. **Post-bug-fix (2026-06-23, O-3): the distance/`truncate`
+      (non-`zonly`) line path now shares the same touched-chunk read**
+      (`src/zprofile._read_cells_by_chunk` / `_line_chunk_budget_global`),
+      so cross-180° lines are no longer over-materialised or prematurely
+      `413`-ed. Lines with bbox ≥ `LINE_SPARSE_MIN_CELLS` read touched
+      chunks (guarded by `MAX_LINE_CHUNKS`); smaller lines keep the dense
+      read (guarded by `MAX_BBOX_CELLS_LINE`). The chunk gather is
+      byte-identical to the dense `ds_s1.values[idx]` read. See
+      `specs/bug_report_20260603.md`.
     * The real bottleneck was not `ds.sel(...)` itself; it was
       `ds_s1["elevation"].values`, which materialised the full bbox subset
       before gathering touched cells. v0.5.5 replaces that with
@@ -290,6 +297,24 @@ production Zarr; the ice_surface variant is only useful for schema checks.
     risk:** DNS rebinding is NOT mitigated (host resolves "safely" during
     allowlist check but to a private address at connect time); spec §6.5
     documents this acceptance.
+
+15. **Cell-index buffers MUST be a 64-bit dtype — never `int16`.** Grid
+    columns reach 86399 and rows 43199. For a line crossing 180°,
+    `xmeridian.crossBoundary` inserts break-points at both ±180, so the bbox
+    spans the full grid width, `mlonbase`≈0, and bbox-relative column indices
+    become the absolute columns (~86399). `np.int16` (max 32767) silently
+    **wraps** those (`np.int16(86159)==20623`), so the read lands in the wrong
+    ocean (~lon −94) with no error — a silent wrong-depth bug that only shows
+    on cross-180 lines (cross-0 keeps indices small). This was the v0.5.4 H9
+    regression: it replaced `np.append` (which auto-promotes the array to
+    int64) with `np.asarray(idx1_buf, dtype=np.int16)`, copying the int16 from
+    the old empty-array initialiser. Fixed in `src/zprofile.py` (use
+    `np.int64`); regression test
+    `tests/test_zprofile.py::test_cross_180_line_matches_equivalent_noncrossing_line`.
+    **Lesson for perf refactors:** `np.append(int16_arr, python_ints)` returns
+    int64 — a `dtype=` on the replacement is NOT byte-equal. Always verify a
+    cross-180 line, not just cross-0, after touching the line walk.
+    See `specs/bug_report_20260603.md`.
 
 ## How to add a new GEBCO release (recipe)
 

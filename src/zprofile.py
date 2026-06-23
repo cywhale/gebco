@@ -142,6 +142,60 @@ def _read_sparse_line_values(ds, plan) -> np.ndarray | None:
     return uniq_values[plan.inverse]
 
 
+def _line_chunk_budget_global(ds, global_lat, global_lon):
+    """(touched_chunks, projected_cells, (lat_chunk, lon_chunk)) for raw global
+    cell indices. Like ``_line_chunk_budget`` but driven by index arrays (the
+    legacy line walk's ``idx1`` + base) rather than a ``LinePlan``."""
+    elev = ds["elevation"]
+    lat_chunk, lon_chunk = elev.encoding.get("chunks", (0, 0))
+    if not lat_chunk or not lon_chunk or global_lat.size == 0:
+        return 0, 0, (lat_chunk, lon_chunk)
+    chunk_ids = np.stack((global_lat // lat_chunk, global_lon // lon_chunk), axis=1)
+    touched = int(np.unique(chunk_ids, axis=0).shape[0])
+    return touched, int(touched * lat_chunk * lon_chunk), (int(lat_chunk), int(lon_chunk))
+
+
+def _read_cells_by_chunk(ds, global_lat, global_lon):
+    """Gather elevation for global ``(lat, lon)`` cell indices, reading only the
+    touched Zarr chunks instead of materialising the enclosing bbox.
+
+    Order-preserving and duplicate-safe (one value per input index, in input
+    order). Byte-identical to ``ds["elevation"].values[lat, lon]`` but bounded
+    to the touched chunks. This is the same read strategy as the v0.5.5 sparse
+    ``zonly`` reader (`_read_sparse_line_values`), generalised so the
+    distance/`truncate` (non-`zonly`) line path can share it — the key to not
+    over-materialising (and not prematurely 413-ing) cross-180° lines whose
+    enclosing bbox spans the whole grid width. Returns ``None`` when chunk
+    metadata is unavailable so callers fall back to a dense read.
+    """
+    elev = ds["elevation"]
+    lat_chunk, lon_chunk = elev.encoding.get("chunks", (0, 0))
+    if not lat_chunk or not lon_chunk:
+        return None
+    n = int(global_lat.shape[0])
+    if n == 0:
+        return np.empty((0,), dtype=elev.dtype)
+    out = np.empty((n,), dtype=elev.dtype)
+    raw_elev = getattr(config, "elev_zarr", None)
+    chunk_row = global_lat // lat_chunk
+    chunk_col = global_lon // lon_chunk
+    by_chunk: dict[tuple[int, int], list[int]] = {}
+    for pos, cid in enumerate(zip(chunk_row.tolist(), chunk_col.tolist())):
+        by_chunk.setdefault(cid, []).append(pos)
+    for (cr, cc), positions in by_chunk.items():
+        lat0 = int(cr * lat_chunk)
+        lat1 = min(lat0 + lat_chunk, elev.shape[0])
+        lon0 = int(cc * lon_chunk)
+        lon1 = min(lon0 + lon_chunk, elev.shape[1])
+        if raw_elev is not None:
+            chunk = raw_elev[lat0:lat1, lon0:lon1]
+        else:
+            chunk = elev.isel(lat=slice(lat0, lat1), lon=slice(lon0, lon1)).values
+        pos_arr = np.asarray(positions, dtype=np.int64)
+        out[pos_arr] = chunk[global_lat[pos_arr] - lat0, global_lon[pos_arr] - lon0]
+    return out
+
+
 def _record_line_stats(
     stats_out: dict | None,
     *,
@@ -259,6 +313,14 @@ def zprofile(loni, lati, mode, sample=1, *, stats_out: dict | None = None):
         mlat0x = ds["lat"][lat0]
         st1 = ds.sel(lon=mlon0x, lat=mlat0x)
         loc1 = [loni[0], lati[0]]
+        # O-2: a single point must honour truncate / lon360 in its echoed
+        # coordinates, exactly like the multi-point line path below. Without
+        # this, `mode=lon360` returned the [-180,180] grid-lookup longitude
+        # instead of the requested [0,360] convention.
+        if "truncate" in modes:
+            loc1 = [round(float(loc1[0]), 5), round(float(loc1[1]), 5)]
+        if "lon360" in modes and loc1[0] < 0:
+            loc1 = [loc1[0] + 360, loc1[1]]
         xt1 = np.array([st1["elevation"].values])
         if format == "row" or format == "dataframe":
             if not zonly:
@@ -369,20 +431,14 @@ def zprofile(loni, lati, mode, sample=1, *, stats_out: dict | None = None):
         # mlon1 = np.max(long)
         mlat0 = np.min(latk) - 1.5 / arc
         mlat0 = mlat0 if mlat0 > -basey else -basey + 0.00001
-        # v0.5.3 H6: bbox guard for the line/point path. Reject early before
-        # we slice a huge subset out of the Zarr (which is the OOM vector).
-        # `ds_s1 = ds.sel(lon=slice(mlon0x, mlon1, sample), lat=...)` below
-        # would otherwise materialise the entire bbox.
-        mlon1_est = np.max(lonk) + 1.5 / arc
-        mlat1_est = np.max(latk) + 1.5 / arc
-        _bbox_cells = (mlon1_est - mlon0) * (mlat1_est - mlat0) * arc * arc
-        if _bbox_cells > config.MAX_BBOX_CELLS_LINE:
-            raise BboxTooLarge(
-                _bbox_cells,
-                config.MAX_BBOX_CELLS_LINE,
-                path="line",
-                kind="bbox_cells",
-            )
+        # v0.5.3 H6 / O-3: the line/point bbox guard now lives at read time
+        # (see the chunk-aware read below). Counting cells from the global
+        # min/max bbox here over-rejected cross-180° lines: crossBoundary
+        # inserts break-points at both ±180, so the bbox spans the full grid
+        # width even for a short transect, tripping a spurious 413 in
+        # non-zonly modes. The read either gathers only touched chunks
+        # (guarded by MAX_LINE_CHUNKS) or, for small lines, does a bounded
+        # dense read (guarded by MAX_BBOX_CELLS_LINE).
         # mlat1 = np.max(latg)
         # if do subsetting dataset, reference-0-x,y should be biased
         mlonbase = gridded_arcsec(mlon0, basex, arc) if subsetFlag else 0
@@ -577,9 +633,16 @@ def zprofile(loni, lati, mode, sample=1, *, stats_out: dict | None = None):
         # v0.5.4 H9: convert buffers to numpy arrays once, matching the
         # shapes/dtypes the downstream slicing and DataFrame builds expect.
         if idx1_buf:
-            idx1 = np.asarray(idx1_buf, dtype=np.int16)
+            # NOTE: must be a 64-bit index dtype. The v0.5.4 H9 refactor used
+            # np.int16 here, but bbox-relative cell indices reach ~86399 for
+            # cross-180° lines (crossBoundary inserts break-points at both
+            # ±180, so mlonbase≈0 and the subset spans the full grid width).
+            # int16 (max 32767) silently wraps those to garbage columns, so
+            # the API read the wrong ocean. The pre-H9 np.append code was
+            # correct only because np.append promoted the array to int64.
+            idx1 = np.asarray(idx1_buf, dtype=np.int64)
         else:
-            idx1 = np.empty(shape=(0, 2), dtype=np.int16)
+            idx1 = np.empty(shape=(0, 2), dtype=np.int64)
         if loc1_buf:
             loc1 = np.asarray(loc1_buf, dtype=float)
         else:
@@ -591,15 +654,57 @@ def zprofile(loni, lati, mode, sample=1, *, stats_out: dict | None = None):
         # mlat0 = np.min(latx) #may cause slice offset to mlatbase, an offset +-1
         mlat1 = np.max(latk) + 1.5 / arc
         mlat1 = mlat1 if mlat1 <= basey else basey - 0.00001
-        mlon0x = ds["lon"][mlonbase].item()
-        mlat0x = ds["lat"][mlatbase].item()
-        ds_s1 = (
-            ds.sel(lon=slice(mlon0x, mlon1, sample), lat=slice(mlat0x, mlat1, sample))
-            if subsetFlag
-            else ds
+        # O-3 / v0.5.5+ : read elevation for the planned cells via a
+        # touched-chunk gather instead of materialising the whole enclosing
+        # bbox. For a cross-180° line the bbox spans the full grid width even
+        # when the line is short, so the dense read both wasted memory and made
+        # the (removed) early bbox guard reject legitimate short transects with
+        # 413. The gather is byte-identical to ds_s1.values[idx] but bounded to
+        # the touched chunks, guarded by MAX_LINE_CHUNKS like the zonly sparse
+        # path. Small lines (bbox < LINE_SPARSE_MIN_CELLS) keep the cheaper
+        # dense read, which the legacy MAX_BBOX_CELLS_LINE guard still bounds.
+        # Use the unclamped max estimates (as the original early guard did) so
+        # the cell count is not distorted by the ±base clamping applied to
+        # mlon1/mlat1 for the dense slice below.
+        bbox_cells = (
+            (np.max(lonk) + 1.5 / arc - mlon0)
+            * (np.max(latk) + 1.5 / arc - mlat0)
+            * arc
+            * arc
         )
-        xt1 = ds_s1["elevation"].values[tuple(idx1.T)]
-        ds_s1.close()
+        global_lat = idx1[:, 0].astype(np.int64) + mlatbase
+        global_lon = idx1[:, 1].astype(np.int64) + mlonbase
+        xt1 = None
+        if subsetFlag and sample == 1 and bbox_cells >= config.LINE_SPARSE_MIN_CELLS:
+            touched, projected, (lat_chunk, lon_chunk) = _line_chunk_budget_global(
+                ds, global_lat, global_lon
+            )
+            if lat_chunk and lon_chunk:
+                if config.MAX_LINE_CHUNKS > 0 and touched > config.MAX_LINE_CHUNKS:
+                    raise BboxTooLarge(
+                        projected,
+                        config.MAX_LINE_CHUNKS * lat_chunk * lon_chunk,
+                        path="line",
+                        kind="line_chunks",
+                    )
+                xt1 = _read_cells_by_chunk(ds, global_lat, global_lon)
+        if xt1 is None:
+            if bbox_cells > config.MAX_BBOX_CELLS_LINE:
+                raise BboxTooLarge(
+                    bbox_cells,
+                    config.MAX_BBOX_CELLS_LINE,
+                    path="line",
+                    kind="bbox_cells",
+                )
+            mlon0x = ds["lon"][mlonbase].item()
+            mlat0x = ds["lat"][mlatbase].item()
+            ds_s1 = (
+                ds.sel(lon=slice(mlon0x, mlon1, sample), lat=slice(mlat0x, mlat1, sample))
+                if subsetFlag
+                else ds
+            )
+            xt1 = ds_s1["elevation"].values[tuple(idx1.T)]
+            ds_s1.close()
         if stats_out is not None:
             plan = plan_line_cells(loni, lati, arc, basex, basey)
             touched_chunks, projected_cells = _line_chunk_budget(plan, ds)
