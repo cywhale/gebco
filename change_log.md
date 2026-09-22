@@ -359,7 +359,7 @@
          frontend receives data instead of an unhandled `413` on very
          large polygons. VM37 keeps the stricter branch default `5e7`.
 
-#### ver 0.5.6 S1 (security) `jsonsrc` SSRF error-message oracle 20260922
+#### ver 0.5.7 (UNRELEASED) S1 security: `jsonsrc` SSRF error-message oracle 20260922
 
     -- Incident: `/gebco?jsonsrc=<url>` distinguished DNS failure,
        SSRF block and non-JSON upstream by error text, making it an
@@ -387,5 +387,17 @@
     -- Residual risk: DNS rebinding is still NOT mitigated (the
        validated address is not pinned to the connection). See
        `specs/security/2026-09-22_jsonsrc_error_oracle_remediation.md`.
-    -- Verification: `uv run --group dev pytest tests/` → 135 passed
+    -- Review round 1 fixes:
+       * host normalisation now uses the `idna` package with
+         `uts46=True`, exactly as `requests`/`urllib3` do. The stdlib
+         `"idna"` codec (IDNA 2003) and `str.casefold()` both fold
+         `straße` to `strasse` while `requests` dials
+         `xn--strae-oqa` — the guard was validating a different host
+         from the one connected to.
+       * `urlparse()` and `.hostname` are now inside the guarded
+         block: `http://[::1` and `http://[not-an-ip]/` raised bare
+         `ValueError`s that reached the generic handler and echoed
+         the parser message, breaking the fixed public contract.
+       * endpoint tests moved onto a real ASGI `TestClient`.
+    -- Verification: `uv run --group dev pytest tests/` → 153 passed
        (was 105); `git diff --check` clean. Not deployed.

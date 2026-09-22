@@ -292,13 +292,38 @@ production Zarr; the ice_surface variant is only useful for schema checks.
 14. **jsonsrc 7-layer defence lives in `src/jsonsrc.py`** (v0.5.3 H1).
     Inline JSON dispatch is decided by the FIRST non-whitespace char
     (`{` or `[`); anything else is treated as a URL. URLs go through
-    scheme allowlist → host resolve → private-IP block (incl. IPv4-mapped
-    IPv6) → no-redirect → streamed size cap → JSON parse. **Residual
-    risk:** DNS rebinding is NOT mitigated (host resolves "safely" during
-    allowlist check but to a private address at connect time); spec §6.5
-    documents this acceptance.
+    scheme allowlist → host normalise → host resolve → private-IP block
+    (incl. IPv4-mapped IPv6) → no-redirect → streamed size cap → JSON
+    parse. **Residual risk:** DNS rebinding is NOT mitigated (host
+    resolves "safely" during allowlist check but to a private address at
+    connect time); spec §6.5 documents this acceptance.
 
-15. **Cell-index buffers MUST be a 64-bit dtype — never `int16`.** Grid
+15. **`jsonsrc` errors have a two-channel contract** (v0.5.7 S1, see
+    `specs/security/2026-09-22_jsonsrc_error_oracle_remediation.md`).
+    `JsonSrcError` carries a client-facing `public_message` and internal
+    `reason` / `host` / `detail`. Response handlers MUST use
+    `exc.public_message` — never `str(exc)`, and never a wrapped socket /
+    parser / `requests` exception — and pass `exc.log_fields()` to
+    `_error_response(..., log_extra=)`. Every failure on the remote path
+    raises `RemoteJsonSrcError`, so the public body is always the fixed
+    42-byte `{"Error":"jsonsrc could not be retrieved"}`; only the log
+    distinguishes DNS failure from an SSRF block. Inline-JSON errors keep
+    their descriptive text (no remote-host oracle). When adding a new
+    remote failure path, add a `reason`, not a new public message.
+
+16. **Host normalisation must agree with `requests`** (v0.5.7 S1).
+    `_normalize_host()` mirrors
+    `requests.PreparedRequest.prepare_url`: ASCII hosts lowercased and
+    passed through, non-ASCII hosts via `idna.encode(host, uts46=True)`
+    — the `idna` package, NOT the stdlib `"idna"` codec, and never
+    `str.casefold()`. Both of those are IDNA 2003 and fold `straße` to
+    `strasse` while `requests` dials `xn--strae-oqa`, so the guard would
+    validate a different host from the one connected to.
+    `tests/test_jsonsrc.py::test_guard_host_matches_requests_prepared_host`
+    pins the agreement against a real prepared URL; keep it passing if
+    `requests` is upgraded.
+
+17. **Cell-index buffers MUST be a 64-bit dtype — never `int16`.** Grid
     columns reach 86399 and rows 43199. For a line crossing 180°,
     `xmeridian.crossBoundary` inserts break-points at both ±180, so the bbox
     spans the full grid width, `mlonbase`≈0, and bbox-relative column indices
@@ -369,7 +394,12 @@ Both public GEBCO API VMs are currently served from:
 
 * checkout: `/home/odbadmin/python/gebco`
 * branch: `gebco_2026_perf_v054`
-* revision: `ad4179c` (v0.5.5 line sparse reads + observability)
+* revision: `ad4179c` (v0.5.5 line sparse reads + observability) as
+  last *verified* on `2026-05-31`. `a5d2a97` (v0.5.6 cross-180 fix)
+  landed on the branch after that check and this file has not been
+  re-verified against the VMs since — confirm with the `pm2 describe`
+  command below before relying on it. The v0.5.7 S1 security branch
+  (`security/jsonsrc-error-oracle-20260922`) is NOT deployed.
 * runtime: root `.venv` built by `uv sync --python 3.11`
 * polygon dependency: installed post-sync via
   `./scripts/install_polars_variant.sh auto`

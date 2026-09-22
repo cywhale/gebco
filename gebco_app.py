@@ -20,7 +20,7 @@ The application contract is unchanged from v0.5.2; this version adds:
   * H10 dask pool size made env-controlled (`GEBCO_DASK_POOL_SIZE`).
   * H13 structured logging via QueueHandler; one log line per request.
 
-v0.5.6 S1 (security) — every remote `jsonsrc` failure now returns one
+v0.5.7 S1 (security) — every remote `jsonsrc` failure now returns one
 fixed 400 body, `{"Error": "jsonsrc could not be retrieved"}`. The
 failure class (DNS, SSRF block, redirect, size cap, bad JSON, ...) moves
 to the structured log so the endpoint stops working as an internal
@@ -170,7 +170,7 @@ def _error_response(status_code: int, message: str, *, request: Request,
     """Build a 4xx/5xx JSONResponse and emit a single WARNING log line.
 
     `message` is the PUBLIC text and is the only thing echoed to the
-    client. `log_extra` carries internal diagnostics (v0.5.6 S1: the
+    client. `log_extra` carries internal diagnostics (v0.5.7 S1: the
     jsonsrc failure reason and normalised host) that must stay
     server-side. Everything is serialised through `json.dumps`, so
     attacker-controlled values are escaped and cannot forge a log line.
@@ -312,7 +312,7 @@ def gebco(
                     out = {col: df[col].to_list() for col in df.columns}
                 response = ORJSONResponse(content=out)
     except JsonSrcError as exc:
-        # v0.5.6 S1: return the loader's fixed public message, never
+        # v0.5.7 S1: return the loader's fixed public message, never
         # `str(exc)` of a wrapped DNS / socket / parser exception. The
         # failure class stays in the structured log only, so remote
         # failures are indistinguishable from outside.

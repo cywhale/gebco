@@ -1,4 +1,4 @@
-# Remediation: `jsonsrc` SSRF error-message oracle (v0.5.6 S1)
+# Remediation: `jsonsrc` SSRF error-message oracle (v0.5.7 S1)
 
 Source report: `2026-09-22_jsonsrc_ssrf_error_oracle_evidence.md`.
 Branch: `security/jsonsrc-error-oracle-20260922` (from `a5d2a97`).
@@ -8,7 +8,9 @@ Not deployed; no change to `main`.
 
 | File | Change |
 | --- | --- |
-| `src/jsonsrc.py` | `JsonSrcError` now carries `public_message` + internal `reason` / `host` / `detail`. Every remote-path failure raises `RemoteJsonSrcError`, whose public message is the fixed constant `PUBLIC_REMOTE_ERROR`. New `_normalize_host()` runs before the SSRF decision. `requests` exceptions are caught and mapped instead of escaping as `IOError`. |
+| `src/jsonsrc.py` | `JsonSrcError` now carries `public_message` + internal `reason` / `host` / `detail`. Every remote-path failure raises `RemoteJsonSrcError`, whose public message is the fixed constant `PUBLIC_REMOTE_ERROR`. New `_normalize_host()` runs before the SSRF decision, using the same IDNA rules as `requests`. `urlparse()` / `.hostname` are inside the guarded block. `requests` exceptions are caught and mapped instead of escaping as `IOError`. |
+| `pyproject.toml` | Declares `idna` — now a direct import, not only a `requests` transitive. |
+| `AGENTS.md` | Invariants 15 (two-channel error contract) and 16 (host normalisation must agree with `requests`). |
 | `gebco_app.py` | `_error_response()` gained `log_extra`; the `JsonSrcError` handler returns `exc.public_message` (not `str(exc)`) and logs `exc.log_fields()`. |
 | `tests/test_jsonsrc.py` | Loader tests now assert `reason` instead of message text; new endpoint-contract, normalisation, log-diagnostic and lon/lat regression tests. |
 
@@ -21,11 +23,11 @@ HTTP 400, 42 bytes
 {"Error":"jsonsrc could not be retrieved"}
 ```
 
-Covered: unsupported scheme, missing hostname, invalid host encoding, DNS
-failure, empty DNS answer, `localhost`, private / loopback / link-local /
-unspecified / IPv4-mapped-IPv6 rejection, connect or read timeout,
-connection failure, HTTP error status, redirect, size-cap rejection,
-invalid UTF-8, invalid JSON.
+Covered: malformed URL, unsupported scheme, missing hostname, invalid
+host encoding, DNS failure, empty DNS answer, `localhost`, private /
+loopback / link-local / unspecified / IPv4-mapped-IPv6 rejection, connect
+or read timeout, connection failure, HTTP error status, redirect,
+size-cap rejection, invalid UTF-8, invalid JSON.
 
 Deliberately unchanged (no remote-host oracle, so §3.3 "do not alter
 ordinary behaviour" wins):
@@ -42,7 +44,7 @@ ordinary behaviour" wins):
 `dns_no_records`, `blocked_localhost`, `blocked_private_address`,
 `redirect_blocked`, `http_error`, `timeout`, `connection_error`,
 `oversized_response`, `invalid_encoding`, `invalid_json`,
-`unsupported_scheme`, `missing_host`, `invalid_host`.
+`unsupported_scheme`, `missing_host`, `invalid_host`, `malformed_url`.
 
 `detail` is a bounded token (`status=403`, `addr=10.0.0.5`,
 `gaierror errno=-2`, `limit=2000000`, the exception class name, or the
@@ -54,12 +56,39 @@ truncated, stripped of non-printable characters and serialised with
 ## 4. Host normalisation
 
 `_normalize_host()` runs *before* the SSRF decision and before any
-hostname comparison: trailing DNS root dots are stripped, names are
-casefolded, IDN labels are folded to punycode, and IPv4/IPv6 literals are
-returned in canonical form and checked directly (no DNS round-trip, so
-the address checked is the address dialled). `exse-001.ntu.internal.` and
-`exse-001.ntu.internal` therefore take the same guard branch and produce
-byte-identical public responses.
+hostname comparison. Trailing DNS root dots are stripped, so
+`exse-001.ntu.internal.` and `exse-001.ntu.internal` take the same guard
+branch and produce byte-identical public responses. IPv4/IPv6 literals
+are returned in canonical form and checked directly — no DNS round-trip,
+so the address checked is the address dialled.
+
+The ASCII / IDN split mirrors `requests.PreparedRequest.prepare_url`
+exactly: ASCII hosts are lowercased and passed through, non-ASCII hosts
+go through `idna.encode(host, uts46=True)`.
+
+**Review round 1, blocker 1.** The first implementation used
+`str.casefold()` plus the stdlib `"idna"` codec. Both are IDNA 2003 and
+fold `ß` to `ss`, so the guard validated `strasse.example` while
+`requests` dialled `xn--strae-oqa.example` — a different host, i.e. the
+SSRF guard could be checking a name that is never connected to.
+`tests/test_jsonsrc.py::test_guard_host_matches_requests_prepared_host`
+now compares the guard's output against the host of a real
+`requests.Request(...).prepare()` URL for a table of IDN, punycode,
+uppercase and ASCII hosts.
+
+Two host spellings (`ｅxample.com`, `exa。mple.com`) normalise
+for us but are rejected outright by `urllib3.parse_url`, so `requests`
+never dials them; the fetch fails closed with the same public error.
+That is the safe direction of the asymmetry, and it is pinned by
+`test_host_requests_refuses_still_fails_closed`.
+
+**Review round 1, blocker 2.** `urlparse()` and the `.hostname` property
+both raise a bare `ValueError` on a malformed URL (`http://[::1` ->
+"Invalid IPv6 URL"; `http://[not-an-ip]/` -> "'not-an-ip' does not appear
+to be an IPv4 or IPv6 address"). They sat outside the guarded block, so
+the generic `ValueError` handler in `gebco_app` echoed the parser message
+— still a 400, but not the fixed body. They are now mapped to
+`malformed_url`.
 
 ## 5. Protections preserved
 
@@ -83,3 +112,9 @@ timeouts; `allow_redirects=False`; streamed size cap that ignores
   mitigation, not error-text uniformity.
 * **No allowlist and no dedicated rate limit** for remote `jsonsrc`
   (report §3.2) — still open.
+* **The guard/`requests` IDNA agreement is pinned by a test, not by
+  construction.** We re-implement the branch `requests` takes rather than
+  asking it for the host it would dial. A `requests` upgrade that changes
+  `prepare_url` would be caught by
+  `test_guard_host_matches_requests_prepared_host`, but only if the test
+  is run.

@@ -1,4 +1,4 @@
-"""Tests for src.jsonsrc — v0.5.3 H1 + v0.5.6 S1 (SSRF error-oracle fix).
+"""Tests for src.jsonsrc — v0.5.3 H1 + v0.5.7 S1 (SSRF error-oracle fix).
 
 Mocks `socket.getaddrinfo` and `requests.get` (via `pytest-mock`) so the
 tests don't need network and don't depend on production hosts.
@@ -18,9 +18,12 @@ from __future__ import annotations
 import json
 import socket
 from types import SimpleNamespace
+from urllib.parse import urlparse
 from unittest.mock import MagicMock
 
 import pytest
+import requests
+from fastapi.testclient import TestClient
 
 # `gebco_app` is imported at module scope (as tests/test_line_observability.py
 # does) because the endpoint-contract tests below call the handler directly.
@@ -80,7 +83,7 @@ def test_inline_whitespace_then_brace(mocker):
 
 
 def test_inline_bad_json_rejected(mocker):
-    """v0.5.6 S1 keeps inline diagnostics: the caller's own payload is
+    """v0.5.7 S1 keeps inline diagnostics: the caller's own payload is
     not a remote-host oracle."""
     mocker.patch("src.jsonsrc.requests.get")
     with pytest.raises(JsonSrcError, match="inline jsonsrc") as excinfo:
@@ -95,7 +98,7 @@ def test_empty_jsonsrc_keeps_its_message():
     assert excinfo.value.reason == "empty_input"
 
 
-# -------- host normalisation (v0.5.6 S1) ---------------------------------
+# -------- host normalisation (v0.5.7 S1) ---------------------------------
 
 def test_normalize_host_strips_trailing_root_dot():
     assert _normalize_host("exse-001.ntu.internal.") == ("exse-001.ntu.internal", False)
@@ -113,6 +116,87 @@ def test_normalize_host_idn_to_punycode():
     unicode_form = _normalize_host("bücher.example")
     assert unicode_form == ("xn--bcher-kva.example", False)
     assert _normalize_host("XN--BCHER-KVA.EXAMPLE.") == unicode_form
+
+
+# Hostnames whose IDNA treatment differs between implementations. The
+# stdlib `"idna"` codec (IDNA 2003 + nameprep) and `str.casefold()` both
+# fold `ß` to `ss`; `requests`/`urllib3` use the `idna` package
+# (`uts46=True`) and dial `xn--strae-oqa.example` instead. A guard that
+# validated `strasse.example` would be validating a different host from
+# the one connected to.
+IDNA_HOSTS = [
+    "straße.example",
+    "STRAßE.example",
+    "faß.example",
+    "bücher.example",
+    "xn--bcher-kva.example",
+    "ÉXAMPLE.com",
+    "日本.example",
+    "xn--wgv71a.example",
+    "example.com",
+    "EXAMPLE.COM",
+    "my_host.example",
+    "exse-001.ntu.internal",
+]
+
+
+def _requests_prepared_host(url: str) -> str | None:
+    """The host `requests` would actually dial, or None if it refuses."""
+    try:
+        prepared = requests.Request("GET", url).prepare().url
+    except requests.exceptions.RequestException:
+        return None
+    return urlparse(prepared).hostname
+
+
+@pytest.mark.parametrize("raw", IDNA_HOSTS)
+def test_guard_host_matches_requests_prepared_host(raw):
+    """The name the SSRF guard validates IS the name `requests` dials."""
+    url = f"http://{raw}/p"
+    dialled = _requests_prepared_host(url)
+    assert dialled is not None, "fixture host must be preparable by requests"
+    guard, _is_ip = _normalize_host(urlparse(url).hostname)
+    # requests keeps a trailing root dot; DNS-wise the names are equal.
+    assert guard == dialled.rstrip(".")
+
+
+def test_idna_2003_casefold_bypass_is_closed():
+    """Regression for the review blocker, spelled out."""
+    guard, _ = _normalize_host("straße.example")
+    assert guard == "xn--strae-oqa.example"
+    assert guard != "strasse.example"          # stdlib "idna" codec / casefold
+    assert guard == _requests_prepared_host("http://straße.example/p")
+
+
+def test_host_requests_refuses_still_fails_closed(mocker):
+    """Where `requests` refuses to prepare the URL, nothing is dialled."""
+    mocker.patch(
+        "src.jsonsrc.socket.getaddrinfo",
+        return_value=[_gai_for("93.184.216.34")],
+    )
+    mocker.patch(
+        "src.jsonsrc.requests.get",
+        side_effect=requests.exceptions.InvalidURL("URL has an invalid label."),
+    )
+    for raw in ("\uff45xample.com", "exa\u3002mple.com"):
+        assert _requests_prepared_host(f"http://{raw}/p") is None
+        _expect_remote_failure("connection_error", f"http://{raw}/p")
+
+
+# -------- malformed URLs (v0.5.7 S1 blocker 2) ---------------------------
+
+@pytest.mark.parametrize("url", [
+    "http://[::1",              # urlparse: "Invalid IPv6 URL"
+    "http://[not-an-ip]/",      # urlparse: "... does not appear to be an IPv4 ..."
+    "http://[]/",
+])
+def test_malformed_url_does_not_leak_parser_error(url):
+    """`urlparse()` / `.hostname` raise a bare ValueError; it must not
+    reach the generic handler in gebco_app and echo the parser message."""
+    exc = _expect_remote_failure("malformed_url", url)
+    assert exc.detail == "ValueError"
+    assert "IPv6" not in exc.public_message
+    assert "not-an-ip" not in exc.public_message
 
 
 def test_normalize_host_keeps_ip_literals():
@@ -290,7 +374,7 @@ def test_http_error_status_rejected(mocker):
 
 
 def test_timeout_rejected(mocker):
-    """Pre-v0.5.6 a Timeout escaped as IOError and surfaced as a 500."""
+    """Pre-v0.5.7 a Timeout escaped as IOError and surfaced as a 500."""
     import requests as _requests
     _public_addr_mock(mocker)
     mocker.patch(
@@ -429,27 +513,32 @@ def test_log_fields_omit_absent_values():
 # =========================================================================
 # Public endpoint contract (evidence file §4)
 # =========================================================================
+#
+# These drive the real ASGI app through starlette's TestClient, so they
+# assert the bytes and Content-Length an actual client receives, via real
+# routing, Query parsing and JSONResponse serialisation. The app is
+# deliberately NOT entered as a context manager: that skips `lifespan()`
+# and its production Zarr open, which these paths never need.
+# `configured_ds` supplies the toy grid for the 200-response regressions.
 
 
 @pytest.fixture
-def app_call(monkeypatch):
-    """Call `gebco_app.gebco()` and capture its structured WARNING lines."""
+def api(monkeypatch):
+    """Real ASGI client + the structured WARNING lines the app emits."""
     records: list[str] = []
-    monkeypatch.setattr(
-        "gebco_app.gebco_logger.logger.warning", records.append
-    )
+    monkeypatch.setattr("gebco_app.gebco_logger.logger.warning", records.append)
+    client = TestClient(gebco_app.app)
 
-    def _call(**kwargs):
-        request = SimpleNamespace(
-            client=SimpleNamespace(host="test-client"), headers={}
+    def _get(**params):
+        return client.get(
+            "/gebco", params={k: v for k, v in params.items() if v is not None}
         )
-        params = {"lon": None, "lat": None, "mode": None, "sample": 5, "jsonsrc": None}
-        params.update(kwargs)
-        return gebco_app.gebco(request, **params)
 
-    return SimpleNamespace(call=_call, records=records, parsed=lambda: [
-        json.loads(rec) for rec in records
-    ])
+    return SimpleNamespace(
+        get=_get,
+        records=records,
+        parsed=lambda: [json.loads(rec) for rec in records],
+    )
 
 
 def _three_failure_mocks(mocker):
@@ -476,20 +565,20 @@ THREE_CASES = (
 )
 
 
-def test_three_remote_failures_are_indistinguishable(app_call, mocker):
+def test_three_remote_failures_are_indistinguishable(api, mocker):
     """Evidence §4: same status, same body, same byte length."""
     _three_failure_mocks(mocker)
-    responses = [app_call.call(jsonsrc=url) for url in THREE_CASES]
+    responses = [api.get(jsonsrc=url) for url in THREE_CASES]
 
     assert {r.status_code for r in responses} == {400}
-    assert {bytes(r.body) for r in responses} == {EXPECTED_PUBLIC_BODY}
-    assert {len(r.body) for r in responses} == {len(EXPECTED_PUBLIC_BODY)}
+    assert {r.content for r in responses} == {EXPECTED_PUBLIC_BODY}
+    assert {len(r.content) for r in responses} == {len(EXPECTED_PUBLIC_BODY)}
     assert {r.headers["content-length"] for r in responses} == {
         str(len(EXPECTED_PUBLIC_BODY))
     }
 
 
-def test_public_body_leaks_no_diagnostics(app_call, mocker):
+def test_public_body_leaks_no_diagnostics(api, mocker):
     """No hostname, IP, errno, content-type, parser text or URL echo."""
     _three_failure_mocks(mocker)
     leaks = (
@@ -498,37 +587,59 @@ def test_public_body_leaks_no_diagnostics(app_call, mocker):
         "http://", "content-type",
     )
     for url in THREE_CASES:
-        body = bytes(app_call.call(jsonsrc=url).body).decode()
+        body = api.get(jsonsrc=url).content.decode()
         assert body == EXPECTED_PUBLIC_BODY.decode()
         for needle in leaks:
             assert needle not in body
 
 
-def test_dotted_and_undotted_host_are_indistinguishable(app_call, mocker):
+def test_malformed_urls_are_indistinguishable_too(api, mocker):
+    """Blocker 2 regression, over real HTTP: a parser error must look
+    exactly like every other remote failure."""
+    _three_failure_mocks(mocker)
+    malformed = ["http://[::1", "http://[not-an-ip]/", "http://[]/"]
+    responses = [api.get(jsonsrc=url) for url in malformed + list(THREE_CASES)]
+
+    assert {r.status_code for r in responses} == {400}
+    assert {r.content for r in responses} == {EXPECTED_PUBLIC_BODY}
+    assert {r.headers["content-length"] for r in responses} == {
+        str(len(EXPECTED_PUBLIC_BODY))
+    }
+    for body in (r.content.decode() for r in responses):
+        assert "IPv6" not in body
+        assert "not-an-ip" not in body
+        assert "does not appear" not in body
+    assert [rec["jsonsrc_reason"] for rec in api.parsed()][:3] == [
+        "malformed_url", "malformed_url", "malformed_url",
+    ]
+
+
+def test_dotted_and_undotted_host_are_indistinguishable(api, mocker):
     """`host.` and `host` must be byte-identical to the outside."""
     mocker.patch(
         "src.jsonsrc.socket.getaddrinfo",
         side_effect=socket.gaierror(-2, "Name or service not known"),
     )
-    plain = app_call.call(jsonsrc=f"http://{UNRESOLVABLE}/")
-    dotted = app_call.call(jsonsrc=f"http://{UNRESOLVABLE}./")
+    plain = api.get(jsonsrc=f"http://{UNRESOLVABLE}/")
+    dotted = api.get(jsonsrc=f"http://{UNRESOLVABLE}./")
 
     assert plain.status_code == dotted.status_code == 400
-    assert bytes(plain.body) == bytes(dotted.body) == EXPECTED_PUBLIC_BODY
-    assert len(plain.body) == len(dotted.body)
+    assert plain.content == dotted.content == EXPECTED_PUBLIC_BODY
+    assert len(plain.content) == len(dotted.content)
+    assert plain.headers["content-length"] == dotted.headers["content-length"]
 
     # ...and internally both land on the same normalised host.
-    hosts = [rec["jsonsrc_host"] for rec in app_call.parsed()]
+    hosts = [rec["jsonsrc_host"] for rec in api.parsed()]
     assert hosts == [UNRESOLVABLE, UNRESOLVABLE]
 
 
-def test_internal_logs_distinguish_the_failure_reasons(app_call, mocker):
+def test_internal_logs_distinguish_the_failure_reasons(api, mocker):
     """Operators keep what the client no longer sees."""
     _three_failure_mocks(mocker)
     for url in THREE_CASES:
-        app_call.call(jsonsrc=url)
+        api.get(jsonsrc=url)
 
-    records = app_call.parsed()
+    records = api.parsed()
     assert [rec["jsonsrc_reason"] for rec in records] == [
         "invalid_json", "dns_failure", "blocked_private_address",
     ]
@@ -544,34 +655,34 @@ def test_internal_logs_distinguish_the_failure_reasons(app_call, mocker):
         assert rec["event"] == "gebco_request_error"
 
 
-def test_error_log_never_contains_url_or_query(app_call, mocker):
+def test_error_log_never_contains_url_or_query(api, mocker):
     """Bounded fields only — no full query string, no upstream body."""
     _three_failure_mocks(mocker)
-    app_call.call(
+    api.get(
         jsonsrc="http://example.com/secret/path?token=SUPERSECRET&x=1",
         mode="zonly",
     )
-    raw = app_call.records[0]
+    raw = api.records[0]
     assert "SUPERSECRET" not in raw
     assert "secret/path" not in raw
     assert "Example Domain" not in raw
     assert len(raw.splitlines()) == 1
 
 
-def test_size_cap_rejection_uses_the_same_public_body(app_call, mocker, monkeypatch):
+def test_size_cap_rejection_uses_the_same_public_body(api, mocker, monkeypatch):
     monkeypatch.setattr(config, "JSONSRC_MAX_BYTES", 100)
     _public_addr_mock(mocker)
     mocker.patch(
         "src.jsonsrc.requests.get",
         return_value=_response_mock(body=b"y" * 400),
     )
-    resp = app_call.call(jsonsrc="http://example.org/big.json")
+    resp = api.get(jsonsrc="http://example.org/big.json")
     assert resp.status_code == 400
-    assert bytes(resp.body) == EXPECTED_PUBLIC_BODY
-    assert app_call.parsed()[0]["jsonsrc_reason"] == "oversized_response"
+    assert resp.content == EXPECTED_PUBLIC_BODY
+    assert api.parsed()[0]["jsonsrc_reason"] == "oversized_response"
 
 
-def test_redirect_rejection_uses_the_same_public_body(app_call, mocker):
+def test_redirect_rejection_uses_the_same_public_body(api, mocker):
     _public_addr_mock(mocker)
     mocker.patch(
         "src.jsonsrc.requests.get",
@@ -580,52 +691,50 @@ def test_redirect_rejection_uses_the_same_public_body(app_call, mocker):
             headers={"location": "http://169.254.169.254/", "content-type": "text/html"},
         ),
     )
-    resp = app_call.call(jsonsrc="http://example.org/poly.json")
+    resp = api.get(jsonsrc="http://example.org/poly.json")
     assert resp.status_code == 400
-    assert bytes(resp.body) == EXPECTED_PUBLIC_BODY
-    assert "169.254.169.254" not in bytes(resp.body).decode()
-    assert app_call.parsed()[0]["jsonsrc_reason"] == "redirect_blocked"
+    assert resp.content == EXPECTED_PUBLIC_BODY
+    assert "169.254.169.254" not in resp.content.decode()
+    assert api.parsed()[0]["jsonsrc_reason"] == "redirect_blocked"
 
 
-def test_inline_json_error_still_explains_itself(app_call, mocker):
+def test_inline_json_error_still_explains_itself(api, mocker):
     """Requirement 2: inline parse errors are unchanged."""
     mocker.patch("src.jsonsrc.requests.get")
-    resp = app_call.call(jsonsrc='{"longitude":[1,2],')
-    body = json.loads(bytes(resp.body))
+    resp = api.get(jsonsrc='{"longitude":[1,2],')
     assert resp.status_code == 400
-    assert body["Error"].startswith("inline jsonsrc is not valid JSON")
-    assert app_call.parsed()[0]["jsonsrc_reason"] == "inline_invalid_json"
+    assert resp.json()["Error"].startswith("inline jsonsrc is not valid JSON")
+    assert api.parsed()[0]["jsonsrc_reason"] == "inline_invalid_json"
 
 
 # -------- regression: ordinary lon/lat traffic is untouched ---------------
 
-def test_normal_line_request_unaffected(configured_ds, app_call):
-    resp = app_call.call(lon="-0.05,0.05", lat="-0.03,0.04", mode="zonly")
+def test_normal_line_request_unaffected(configured_ds, api):
+    resp = api.get(lon="-0.05,0.05", lat="-0.03,0.04", mode="zonly")
     assert resp.status_code == 200
-    payload = json.loads(bytes(resp.body))
+    payload = resp.json()
     assert set(payload) == {"longitude", "latitude", "z"}
     assert len(payload["z"]) > 1
     assert len(payload["longitude"]) == len(payload["z"])
 
 
-def test_normal_point_request_unaffected(configured_ds, app_call):
-    resp = app_call.call(lon="-0.05,0.05", lat="-0.03,0.04", mode="point,zonly")
+def test_normal_point_request_unaffected(configured_ds, api):
+    resp = api.get(lon="-0.05,0.05", lat="-0.03,0.04", mode="point,zonly")
     assert resp.status_code == 200
-    payload = json.loads(bytes(resp.body))
-    assert len(payload["z"]) == 2
+    assert len(resp.json()["z"]) == 2
 
 
-def test_normal_inline_jsonsrc_request_unaffected(configured_ds, app_call, mocker):
+def test_normal_inline_jsonsrc_request_unaffected(configured_ds, api, mocker):
     mocked_get = mocker.patch("src.jsonsrc.requests.get")
-    resp = app_call.call(
+    resp = api.get(
         jsonsrc='{"longitude":[-0.05,0.05],"latitude":[-0.03,0.04]}', mode="zonly"
     )
     assert resp.status_code == 200
-    assert len(json.loads(bytes(resp.body))["z"]) > 1
+    assert len(resp.json()["z"]) > 1
     mocked_get.assert_not_called()
 
 
-def test_remote_jsonsrc_success_still_works(configured_ds, app_call, mocker):
+def test_remote_jsonsrc_success_still_works(configured_ds, api, mocker):
     _public_addr_mock(mocker)
     mocker.patch(
         "src.jsonsrc.requests.get",
@@ -635,7 +744,7 @@ def test_remote_jsonsrc_success_still_works(configured_ds, app_call, mocker):
             ).encode()
         ),
     )
-    resp = app_call.call(jsonsrc="http://example.org/points.json", mode="zonly")
+    resp = api.get(jsonsrc="http://example.org/points.json", mode="zonly")
     assert resp.status_code == 200
-    assert len(json.loads(bytes(resp.body))["z"]) > 1
-    assert app_call.records == []  # no warning line on the happy path
+    assert len(resp.json()["z"]) > 1
+    assert api.records == []  # no warning line on the happy path

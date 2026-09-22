@@ -1,4 +1,4 @@
-"""Hardened loader for the `jsonsrc` query parameter (v0.5.3 H1, v0.5.6 S1).
+"""Hardened loader for the `jsonsrc` query parameter (v0.5.3 H1, v0.5.7 S1).
 
 Pre-v0.5.3 the API did `requests.get(jsonsrc)` with no timeout, no scheme
 restriction, no host restriction, and no response-size cap. For a public
@@ -17,7 +17,7 @@ This module implements the seven-layer defence described in
   6. Streamed size cap         (config.JSONSRC_MAX_BYTES, header ignored)
   7. Content-type hint + JSON parse
 
-v0.5.6 S1 — error-message oracle fix
+v0.5.7 S1 — error-message oracle fix
 ------------------------------------
 The layers above blocked the fetch but the *messages* still leaked which
 layer fired: "could not resolve host X", "blocked host: X resolves to
@@ -59,6 +59,11 @@ import socket
 from typing import Iterable, Optional
 from urllib.parse import urlparse
 
+# The SAME IDNA implementation `requests`/`urllib3` use to build the
+# hostname they actually dial. The stdlib `"idna"` codec is IDNA 2003 and
+# disagrees with it (e.g. `straße` -> `strasse` vs `xn--strae-oqa`), which
+# would let the guard inspect a different host than the one connected to.
+import idna
 import requests
 
 import src.config as config
@@ -175,11 +180,19 @@ def _normalize_host(raw: Optional[str]) -> tuple[str, bool]:
 
     Returns `(host, is_ip_literal)`.
 
-    v0.5.6 S1: `host.` and `host` are the same DNS name, and DNS labels
+    v0.5.7 S1: `host.` and `host` are the same DNS name, and DNS labels
     are case-insensitive, so both must reach the same guard branch — a
     string-compare guard that misses `EXSE-001.NTU.INTERNAL.` would be a
-    bypass. IDN hostnames are folded to punycode so the name the guard
-    inspects is the name `requests` will later put on the wire.
+    bypass.
+
+    The ASCII / IDN split mirrors `requests.PreparedRequest.prepare_url`
+    exactly: ASCII hosts are lowercased and passed through, non-ASCII
+    hosts go through `idna.encode(..., uts46=True)`. Anything else lets
+    the guard validate one name while `requests` dials another — the
+    stdlib `"idna"` codec (IDNA 2003 + nameprep) does exactly that, and
+    `str.casefold()` is worse still: it turns `straße` into `strasse`
+    while `requests` connects to `xn--strae-oqa`.
+    `test_guard_host_matches_requests_prepared_host` pins the agreement.
 
     IP literals are returned in canonical form and flagged, so the caller
     can check them directly instead of round-tripping through DNS.
@@ -196,11 +209,15 @@ def _normalize_host(raw: Optional[str]) -> tuple[str, bool]:
     except ValueError:
         pass
 
-    host = host.casefold()
+    if host.isascii():
+        # What `requests` does: no IDNA pass, ASCII host used as-is.
+        # `urlsplit().hostname` has already lowercased it; be explicit.
+        return host.lower(), False
+
     try:
-        # ToASCII per label: unicode -> punycode, punycode stays put.
-        host = host.encode("idna").decode("ascii")
-    except (UnicodeError, UnicodeDecodeError) as exc:
+        host = idna.encode(host, uts46=True).decode("ascii")
+    except (idna.IDNAError, UnicodeError) as exc:
+        # `requests` raises InvalidURL here, so it would never connect.
         raise RemoteJsonSrcError(
             "invalid_host", detail=type(exc).__name__
         ) from exc
@@ -256,16 +273,30 @@ def _check_host(host: str, is_ip_literal: bool) -> None:
 
 
 def _fetch_url(url: str) -> object:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
+    # v0.5.7 S1: `urlparse()` AND the `.hostname` property both raise a
+    # bare ValueError on a malformed URL (`http://[::1` -> "Invalid IPv6
+    # URL", `http://[not-an-ip]/` -> "... does not appear to be an IPv4
+    # or IPv6 address"). Outside this try they reached the generic
+    # ValueError handler in gebco_app and echoed the parser message,
+    # breaking the fixed public contract.
+    try:
+        parsed = urlparse(url)
+        scheme = parsed.scheme
+        hostname = parsed.hostname
+    except ValueError as exc:
         raise RemoteJsonSrcError(
-            "unsupported_scheme", detail=f"scheme={parsed.scheme[:32]!r}"
+            "malformed_url", detail=type(exc).__name__
+        ) from exc
+
+    if scheme not in ("http", "https"):
+        raise RemoteJsonSrcError(
+            "unsupported_scheme", detail=f"scheme={scheme[:32]!r}"
         )
-    if not parsed.hostname:
+    if not hostname:
         raise RemoteJsonSrcError("missing_host")
 
-    # v0.5.6 S1 — normalise BEFORE the guard, not after.
-    host, is_ip_literal = _normalize_host(parsed.hostname)
+    # v0.5.7 S1 — normalise BEFORE the guard, not after.
+    host, is_ip_literal = _normalize_host(hostname)
     _check_host(host, is_ip_literal)
 
     timeout = (config.JSONSRC_CONNECT_TIMEOUT_S, config.JSONSRC_READ_TIMEOUT_S)
