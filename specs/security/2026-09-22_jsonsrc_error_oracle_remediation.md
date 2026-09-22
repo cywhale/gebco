@@ -144,9 +144,10 @@ See `AGENTS.md` -> "Dependency workflow — uv only".
 * **DNS rebinding is NOT fixed.** The address validated by
   `getaddrinfo()` is still not pinned to the socket `requests` opens, so
   a hostile resolver can answer public during validation and private at
-  connect time. Fixing it needs a pinned-address transport adapter, or
-  an allowlist, or disabling remote fetch
-  (`GEBCO_JSONSRC_ALLOW_REMOTE=false`). Untouched by this patch.
+  connect time. Fixing it needs a pinned-address transport adapter or an
+  allowlist. Remote fetch is now disabled by default; explicitly enabling
+  it requires `GEBCO_JSONSRC_ALLOW_REMOTE=true`. Inline JSON/GeoJSON is
+  unaffected.
 * **Timing remains a side channel.** Bodies and statuses are now
   identical, but a DNS failure, a refused connection and a served page
   take measurably different times. Rate limiting (report §3.2) is the

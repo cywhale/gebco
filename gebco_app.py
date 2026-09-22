@@ -5,8 +5,8 @@ v0.5.3 hardening pass — see specs/v0.5.3_hardening_checklist_v2.md.
 The application contract is unchanged from v0.5.2; this version adds:
 
   * H1  jsonsrc URL fetch hardened (timeout / SSRF guard / no-redirect /
-        streamed size cap). Default still accepts http/https URLs from
-        the public internet.
+        streamed size cap). Remote URL fetch is opt-in via
+        GEBCO_JSONSRC_ALLOW_REMOTE=true; inline JSON/GeoJSON is unaffected.
   * H2  lon / lat finite + range validation (rejects NaN, ±Inf,
         out-of-range values).
   * H3  `mode=lon360` accepts input in [0, 360] (validated first, then
