@@ -226,7 +226,7 @@ production Zarr; the ice_surface variant is only useful for schema checks.
 
     | Knob | Default | Effect |
     |---|---|---|
-    | `GEBCO_JSONSRC_ALLOW_REMOTE` | `true` | set `false` to refuse all remote URL fetches |
+    | `GEBCO_JSONSRC_ALLOW_REMOTE` | `false` | set explicit `true` to opt in to remote URL fetches; inline JSON/GeoJSON is unaffected |
     | `GEBCO_JSONSRC_MAX_BYTES` | `2000000` | streamed response size cap (bytes) |
     | `GEBCO_JSONSRC_CONNECT_TIMEOUT_S` | `2` | URL connect timeout |
     | `GEBCO_JSONSRC_READ_TIMEOUT_S` | `5` | URL read timeout |

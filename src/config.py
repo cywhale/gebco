@@ -12,6 +12,14 @@ def _csv_env(name, default=""):
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _explicit_true_env(name, default=False):
+    """Return true only for an explicit, case-insensitive ``true`` value."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() == "true"
+
+
 host = os.getenv("HOST", "http://localhost:8013")
 api_title = os.getenv("API_TITLE", "ODB API for GEBCO Bathymetry")
 api_version = os.getenv("API_VERSION", "1.1.0")
@@ -43,7 +51,8 @@ MAX_LINE_CHUNKS = int(os.getenv("GEBCO_MAX_LINE_CHUNKS", "64"))
 LINE_SPARSE_MIN_CELLS = int(os.getenv("GEBCO_LINE_SPARSE_MIN_CELLS", "1000000"))
 
 # H1 — jsonsrc URL fetch hardening.
-JSONSRC_ALLOW_REMOTE = os.getenv("GEBCO_JSONSRC_ALLOW_REMOTE", "true").lower() != "false"
+# Remote URL fetch is opt-in. Inline JSON/GeoJSON is always unaffected.
+JSONSRC_ALLOW_REMOTE = _explicit_true_env("GEBCO_JSONSRC_ALLOW_REMOTE", False)
 JSONSRC_MAX_BYTES = int(os.getenv("GEBCO_JSONSRC_MAX_BYTES", "2000000"))           # 2 MB
 JSONSRC_CONNECT_TIMEOUT_S = float(os.getenv("GEBCO_JSONSRC_CONNECT_TIMEOUT_S", "2"))
 JSONSRC_READ_TIMEOUT_S = float(os.getenv("GEBCO_JSONSRC_READ_TIMEOUT_S", "5"))

@@ -47,6 +47,12 @@ EXPECTED_PUBLIC_BODY = b'{"Error":"jsonsrc could not be retrieved"}'
 UNRESOLVABLE = "definitely-not-a-real-host-12345.invalid"
 
 
+@pytest.fixture(autouse=True)
+def remote_fetch_enabled(monkeypatch):
+    """Enable the remote path explicitly for tests that exercise it."""
+    monkeypatch.setattr(config, "JSONSRC_ALLOW_REMOTE", True)
+
+
 def _expect_remote_failure(reason: str, jsonsrc: str) -> JsonSrcError:
     """Assert the fixed public message, return the exception for detail checks."""
     with pytest.raises(JsonSrcError) as excinfo:
@@ -538,6 +544,19 @@ def test_allow_remote_false_does_not_block_inline(mocker, monkeypatch):
     monkeypatch.setattr(config, "JSONSRC_ALLOW_REMOTE", False)
     out = load_jsonsrc('{"a":1}')
     assert out == {"a": 1}
+
+
+def test_remote_fetch_env_is_explicit_opt_in(monkeypatch):
+    monkeypatch.delenv("GEBCO_JSONSRC_ALLOW_REMOTE", raising=False)
+    assert config._explicit_true_env("GEBCO_JSONSRC_ALLOW_REMOTE", False) is False
+
+    for value in ("false", "0", "yes", "unexpected"):
+        monkeypatch.setenv("GEBCO_JSONSRC_ALLOW_REMOTE", value)
+        assert config._explicit_true_env("GEBCO_JSONSRC_ALLOW_REMOTE", False) is False
+
+    for value in ("true", "TRUE", " True "):
+        monkeypatch.setenv("GEBCO_JSONSRC_ALLOW_REMOTE", value)
+        assert config._explicit_true_env("GEBCO_JSONSRC_ALLOW_REMOTE", False) is True
 
 
 # -------- internal diagnostics are bounded and injection-safe ------------

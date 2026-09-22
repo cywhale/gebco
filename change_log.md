@@ -411,6 +411,11 @@
          `urllib3.exceptions.LocationParseError` is a `ValueError` but
          NOT a `requests.RequestException` and escaped the handler
          (`http://example.com../` leaked a 69-byte parse error).
+    -- Security follow-up: remote `jsonsrc` URL fetching is now opt-in;
+       the default is disabled and only an explicit
+       `GEBCO_JSONSRC_ALLOW_REMOTE=true` enables it. Inline JSON/GeoJSON
+       input is unchanged. This reduces exposure while DNS rebinding
+       mitigation remains a separate follow-up.
     -- Dependencies (uv only): `idna` is now a direct dependency in the
        root `pyproject.toml` / `uv.lock` because `src/jsonsrc.py` imports
        it directly rather than relying on the `requests` transitive.
@@ -419,5 +424,5 @@
        `requirements.txt` are archived pre-v0.5.1 artefacts and are
        intentionally NOT maintained or synchronized; see `AGENTS.md`
        -> "Dependency workflow — uv only".
-    -- Verification: `uv run --group dev pytest tests/` → 161 passed
+    -- Verification: `uv run --group dev pytest tests/` → 162 passed
        (was 105); `git diff --check` clean. Not deployed.
