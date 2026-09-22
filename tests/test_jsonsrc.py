@@ -100,9 +100,33 @@ def test_empty_jsonsrc_keeps_its_message():
 
 # -------- host normalisation (v0.5.7 S1) ---------------------------------
 
-def test_normalize_host_strips_trailing_root_dot():
+def test_normalize_host_strips_one_trailing_root_dot():
     assert _normalize_host("exse-001.ntu.internal.") == ("exse-001.ntu.internal", False)
-    assert _normalize_host("mail.ntu.edu.tw..") == ("mail.ntu.edu.tw", False)
+    assert _normalize_host("mail.ntu.edu.tw.") == ("mail.ntu.edu.tw", False)
+
+
+@pytest.mark.parametrize("raw", ["mail.ntu.edu.tw..", "example.com...", ".."])
+def test_normalize_host_rejects_multiple_trailing_dots(raw):
+    """`rstrip(".")` would fold `host..` to `host`, but `requests` dials
+    `host..` verbatim — the guard would validate a name never used."""
+    with pytest.raises(JsonSrcError) as excinfo:
+        _normalize_host(raw)
+    assert excinfo.value.public_message == PUBLIC_REMOTE_ERROR
+    assert excinfo.value.reason == "invalid_host"
+    assert excinfo.value.detail == "empty_dns_label"
+    assert excinfo.value.host is not None  # operators still see the attempt
+
+
+def test_multi_dot_host_is_not_folded_onto_the_single_dot_form(mocker):
+    """`host.` resolves and is guarded; `host..` is refused outright."""
+    gai = mocker.patch(
+        "src.jsonsrc.socket.getaddrinfo",
+        return_value=[_gai_for("10.0.0.5")],
+    )
+    _expect_remote_failure("blocked_private_address", "http://intranet.example./x")
+    gai.reset_mock()
+    _expect_remote_failure("invalid_host", "http://intranet.example../x")
+    gai.assert_not_called()
 
 
 def test_normalize_host_casefolds():
@@ -126,6 +150,7 @@ def test_normalize_host_idn_to_punycode():
 # the one connected to.
 IDNA_HOSTS = [
     "straße.example",
+    "exse-001.ntu.internal.",
     "STRAßE.example",
     "faß.example",
     "bücher.example",
@@ -156,8 +181,10 @@ def test_guard_host_matches_requests_prepared_host(raw):
     dialled = _requests_prepared_host(url)
     assert dialled is not None, "fixture host must be preparable by requests"
     guard, _is_ip = _normalize_host(urlparse(url).hostname)
-    # requests keeps a trailing root dot; DNS-wise the names are equal.
-    assert guard == dialled.rstrip(".")
+    # requests keeps the trailing root dot; `host.` and `host` are the
+    # same DNS name, so strip exactly one — never `rstrip(".")`, which
+    # would also hide a `host..` mismatch.
+    assert guard == dialled[:-1] if dialled.endswith(".") else guard == dialled
 
 
 def test_idna_2003_casefold_bypass_is_closed():
@@ -199,6 +226,30 @@ def test_malformed_url_does_not_leak_parser_error(url):
     assert "not-an-ip" not in exc.public_message
 
 
+@pytest.mark.parametrize("host", ["a..b.example", "x" * 70 + ".example"])
+def test_getaddrinfo_unicode_error_does_not_leak(host):
+    """CPython's getaddrinfo IDNA-encodes the name and raises
+    UnicodeError — a ValueError, not a gaierror — for an empty or
+    over-long label. It must not reach the generic handler."""
+    exc = _expect_remote_failure("invalid_host", f"http://{host}/x")
+    assert exc.detail == "UnicodeError"
+
+
+def test_non_requests_exception_cannot_escape_the_boundary(mocker):
+    """urllib3's LocationParseError is a ValueError but NOT a
+    requests.RequestException, so it slipped past the handler and
+    gebco_app echoed its message."""
+    import urllib3
+    _public_addr_mock(mocker)
+    mocker.patch(
+        "src.jsonsrc.requests.get",
+        side_effect=urllib3.exceptions.LocationParseError("example.com.."),
+    )
+    exc = _expect_remote_failure("unexpected_error", "http://example.org/p.json")
+    assert exc.detail == "LocationParseError"
+    assert "example.com" not in exc.public_message
+
+
 def test_normalize_host_keeps_ip_literals():
     assert _normalize_host("127.0.0.1") == ("127.0.0.1", True)
     assert _normalize_host("127.0.0.1.") == ("127.0.0.1", True)
@@ -208,7 +259,7 @@ def test_normalize_host_keeps_ip_literals():
 
 
 def test_normalize_host_rejects_empty_and_dot_only():
-    for raw in ("", ".", "...", "   "):
+    for raw in ("", ".", "   "):
         with pytest.raises(JsonSrcError) as excinfo:
             _normalize_host(raw)
         assert excinfo.value.public_message == PUBLIC_REMOTE_ERROR
@@ -546,6 +597,13 @@ def _three_failure_mocks(mocker):
     def _dispatch(host, *args, **kwargs):
         if host == "example.com":
             return [_gai_for("93.184.216.34")]
+        # Faithful to CPython: getaddrinfo IDNA-encodes the name itself
+        # and raises UnicodeError (not gaierror) on a bad label.
+        if any(not label or len(label) > 63 for label in host.split(".")):
+            raise UnicodeError(
+                "encoding with 'idna' codec failed "
+                "(UnicodeError: label empty or too long)"
+            )
         raise socket.gaierror(-2, "Name or service not known")
 
     mocker.patch("src.jsonsrc.socket.getaddrinfo", side_effect=_dispatch)
@@ -597,7 +655,12 @@ def test_malformed_urls_are_indistinguishable_too(api, mocker):
     """Blocker 2 regression, over real HTTP: a parser error must look
     exactly like every other remote failure."""
     _three_failure_mocks(mocker)
-    malformed = ["http://[::1", "http://[not-an-ip]/", "http://[]/"]
+    malformed = [
+        "http://[::1", "http://[not-an-ip]/", "http://[]/",
+        "http://a..b.example/",          # getaddrinfo UnicodeError
+        "http://" + "x" * 70 + ".example/",
+        "http://example.com../",         # multiple trailing root dots
+    ]
     responses = [api.get(jsonsrc=url) for url in malformed + list(THREE_CASES)]
 
     assert {r.status_code for r in responses} == {400}
@@ -609,8 +672,9 @@ def test_malformed_urls_are_indistinguishable_too(api, mocker):
         assert "IPv6" not in body
         assert "not-an-ip" not in body
         assert "does not appear" not in body
-    assert [rec["jsonsrc_reason"] for rec in api.parsed()][:3] == [
+    assert [rec["jsonsrc_reason"] for rec in api.parsed()][:6] == [
         "malformed_url", "malformed_url", "malformed_url",
+        "invalid_host", "invalid_host", "invalid_host",
     ]
 
 

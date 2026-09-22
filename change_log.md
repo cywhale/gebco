@@ -399,5 +399,20 @@
          `ValueError`s that reached the generic handler and echoed
          the parser message, breaking the fixed public contract.
        * endpoint tests moved onto a real ASGI `TestClient`.
-    -- Verification: `uv run --group dev pytest tests/` → 153 passed
+    -- Review round 2 fixes:
+       * strip exactly ONE trailing root dot; reject `host..` as
+         `invalid_host`. `rstrip(".")` folded it to `host` while
+         `requests` dials `host..` verbatim.
+       * `_resolved_addresses` now catches `UnicodeError`:
+         `socket.getaddrinfo` IDNA-encodes the name itself and raises
+         that, not `gaierror`, for an empty/over-long label
+         (`http://a..b.example/` leaked an 85-byte codec message).
+       * `_fetch_url` ends with a catch-all (`unexpected_error`):
+         `urllib3.exceptions.LocationParseError` is a `ValueError` but
+         NOT a `requests.RequestException` and escaped the handler
+         (`http://example.com../` leaked a 69-byte parse error).
+       * `idna` + the long-missing `pyproj` added to `requirements.txt`
+         and `Pipfile`; `AGENTS.md` now names `pyproject.toml`/`uv.lock`
+         as the authoritative manifest.
+    -- Verification: `uv run --group dev pytest tests/` → 161 passed
        (was 105); `git diff --check` clean. Not deployed.

@@ -44,7 +44,8 @@ ordinary behaviour" wins):
 `dns_no_records`, `blocked_localhost`, `blocked_private_address`,
 `redirect_blocked`, `http_error`, `timeout`, `connection_error`,
 `oversized_response`, `invalid_encoding`, `invalid_json`,
-`unsupported_scheme`, `missing_host`, `invalid_host`, `malformed_url`.
+`unsupported_scheme`, `missing_host`, `invalid_host`, `malformed_url`,
+`unexpected_error`.
 
 `detail` is a bounded token (`status=403`, `addr=10.0.0.5`,
 `gaierror errno=-2`, `limit=2000000`, the exception class name, or the
@@ -81,6 +82,29 @@ for us but are rejected outright by `urllib3.parse_url`, so `requests`
 never dials them; the fetch fails closed with the same public error.
 That is the safe direction of the asymmetry, and it is pinned by
 `test_host_requests_refuses_still_fails_closed`.
+
+**Review round 2.** `rstrip(".")` folded `host..` to `host`, but
+`requests` dials `host..` verbatim — the same class of guard/dial
+divergence as blocker 1. Exactly one trailing dot is now stripped and
+anything still ending in `.` is rejected as `invalid_host`.
+
+Chasing that uncovered two more escapes of the blocker-2 class, both
+live before this round:
+
+* `socket.getaddrinfo()` IDNA-encodes the name itself and raises
+  `UnicodeError` ("label empty or too long"), **not** `socket.gaierror`,
+  for an empty or over-long label. `http://a..b.example/` therefore
+  returned an 85-byte body quoting the codec message.
+* `urllib3.exceptions.LocationParseError` is a `ValueError` but **not** a
+  `requests.RequestException`, so it slipped past the `requests` handler;
+  `http://example.com../` returned a 69-byte body quoting the parse
+  error.
+
+`_resolved_addresses()` now catches `UnicodeError`, and `_fetch_url()`
+ends with a catch-all mapped to `unexpected_error` — the fixed public
+response is only fixed if nothing escapes the boundary. The catch-all
+logs the exception class name so a genuine bug stays greppable rather
+than silently becoming a 400.
 
 **Review round 1, blocker 2.** `urlparse()` and the `.hostname` property
 both raise a bare `ValueError` on a malformed URL (`http://[::1` ->

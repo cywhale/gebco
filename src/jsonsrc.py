@@ -198,10 +198,18 @@ def _normalize_host(raw: Optional[str]) -> tuple[str, bool]:
     can check them directly instead of round-tripping through DNS.
     """
     host = (raw or "").strip()
-    # A single trailing dot is the DNS root; strip any number of them.
-    host = host.rstrip(".")
+    # Exactly ONE trailing dot is the DNS root label, and `host.` is the
+    # same name as `host`. More than one is an empty label: not a valid
+    # name, and `requests` would dial `host..` verbatim, so stripping
+    # them would leave the guard validating a name that is never used.
+    if host.endswith("."):
+        host = host[:-1]
     if not host:
         raise RemoteJsonSrcError("missing_host")
+    if host.endswith("."):
+        raise RemoteJsonSrcError(
+            "invalid_host", host=host, detail="empty_dns_label"
+        )
 
     # IPv4 / IPv6 literal (urlparse already stripped the [] from v6).
     try:
@@ -236,6 +244,14 @@ def _resolved_addresses(host: str) -> Iterable[str]:
     except socket.gaierror as exc:
         raise RemoteJsonSrcError(
             "dns_failure", host=host, detail=f"gaierror errno={exc.errno}"
+        ) from exc
+    except UnicodeError as exc:
+        # CPython's getaddrinfo IDNA-encodes the name itself and raises
+        # UnicodeError ("label empty or too long") — a ValueError, NOT a
+        # gaierror. Uncaught it reached gebco_app's generic ValueError
+        # handler and echoed the codec message.
+        raise RemoteJsonSrcError(
+            "invalid_host", host=host, detail=type(exc).__name__
         ) from exc
     seen: set[str] = set()
     for record in records:
@@ -349,16 +365,28 @@ def _fetch_url(url: str) -> object:
                 raise RemoteJsonSrcError(
                     "invalid_json", host=host, detail=f"content_type={ctype[:64]!r}"
                 ) from exc
+    except JsonSrcError:
+        raise  # already classified above; do not re-wrap
     except requests.exceptions.Timeout as exc:
         raise RemoteJsonSrcError(
             "timeout", host=host, detail=type(exc).__name__
         ) from exc
     except requests.exceptions.RequestException as exc:
         # Connection refused / reset / TLS failure / chunked-encoding
-        # error. Pre-v0.5.6 these escaped as IOError and surfaced as a
+        # error. Pre-v0.5.7 these escaped as IOError and surfaced as a
         # 500, which was itself an oracle.
         raise RemoteJsonSrcError(
             "connection_error", host=host, detail=type(exc).__name__
+        ) from exc
+    except Exception as exc:
+        # The fixed public response is only fixed if NOTHING escapes this
+        # boundary. `urllib3.exceptions.LocationParseError` is the known
+        # case: a ValueError that is NOT a requests.RequestException, so
+        # it slipped past the clause above and gebco_app's generic
+        # ValueError handler echoed "Failed to parse: 'example.com..'".
+        # A distinct reason keeps it greppable instead of silent.
+        raise RemoteJsonSrcError(
+            "unexpected_error", host=host, detail=type(exc).__name__
         ) from exc
 
 

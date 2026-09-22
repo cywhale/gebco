@@ -32,8 +32,14 @@ gebco/
 ├── conf/                 # gunicorn/pm2 config
 ├── scripts/              # deployment/runtime helper scripts
 ├── simu/                 # legacy experiment scripts (ignore unless asked)
-├── Pipfile / Pipfile.lock  # Production runtime (Python 3.11, Pipenv)
-├── requirements.txt      # Mirror of Pipfile (for non-Pipenv deployments)
+├── pyproject.toml / uv.lock  # AUTHORITATIVE dependency manifest. VM34 and
+│                             # VM37 both build their .venv with `uv sync`.
+├── Pipfile / Pipfile.lock  # Legacy Pipenv mirror, kept for non-uv hosts
+├── requirements.txt      # Legacy pip mirror (same caveat)
+│                         # Both mirrors are hand-maintained and have drifted
+│                         # before (pyproj was missing from v0.5.4 until
+│                         # v0.5.7 S1). Add every new DIRECT dependency to all
+│                         # three, or retire the two mirrors.
 ├── change_log.md
 └── README.md             # End-user facing
 ```
