@@ -411,8 +411,13 @@
          `urllib3.exceptions.LocationParseError` is a `ValueError` but
          NOT a `requests.RequestException` and escaped the handler
          (`http://example.com../` leaked a 69-byte parse error).
-       * `idna` + the long-missing `pyproj` added to `requirements.txt`
-         and `Pipfile`; `AGENTS.md` now names `pyproject.toml`/`uv.lock`
-         as the authoritative manifest.
+    -- Dependencies (uv only): `idna` is now a direct dependency in the
+       root `pyproject.toml` / `uv.lock` because `src/jsonsrc.py` imports
+       it directly rather than relying on the `requests` transitive.
+       `pyproj` remains declared in that same root uv production
+       environment. The legacy `Pipfile` / `Pipfile.lock` /
+       `requirements.txt` are archived pre-v0.5.1 artefacts and are
+       intentionally NOT maintained or synchronized; see `AGENTS.md`
+       -> "Dependency workflow — uv only".
     -- Verification: `uv run --group dev pytest tests/` → 161 passed
        (was 105); `git diff --check` clean. Not deployed.

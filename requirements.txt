@@ -1,16 +1,25 @@
+# ARCHIVED — NOT a supported deployment manifest.
+#
+# GEBCO production moved from Pipenv/pip to uv in v0.5.1
+# (specs/v0.5.1_migration_plan.md). The authoritative production
+# dependency manifest is the root pyproject.toml + uv.lock.
+#
+# Kept for historical reference only: NOT maintained, synchronized or
+# tested, and already stale (pyproj, a direct dependency since v0.5.4,
+# was never added). Do not `pip install -r` this for production.
+# See AGENTS.md -> "Dependency workflow — uv only".
+
 dask[complete]==2025.3.0
 distributed==2025.3.0
 python-dotenv==1.1.0
 fastapi[standard]==0.115.12
 geopy==2.4.1
 gunicorn==23.0.0
-idna==3.16
 numcodecs==0.15.1
 numpy==1.26.4
 orjson==3.10.16
 polars==1.26.0
 pyarrow==19.0.1
-pyproj==3.7.2
 Requests==2.32.3
 setuptools==78.1.0
 shapely==2.0.7

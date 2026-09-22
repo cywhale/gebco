@@ -9,8 +9,8 @@ Not deployed; no change to `main`.
 | File | Change |
 | --- | --- |
 | `src/jsonsrc.py` | `JsonSrcError` now carries `public_message` + internal `reason` / `host` / `detail`. Every remote-path failure raises `RemoteJsonSrcError`, whose public message is the fixed constant `PUBLIC_REMOTE_ERROR`. New `_normalize_host()` runs before the SSRF decision, using the same IDNA rules as `requests`. `urlparse()` / `.hostname` are inside the guarded block. `requests` exceptions are caught and mapped instead of escaping as `IOError`. |
-| `pyproject.toml` | Declares `idna` — now a direct import, not only a `requests` transitive. |
-| `AGENTS.md` | Invariants 15 (two-channel error contract) and 16 (host normalisation must agree with `requests`). |
+| `pyproject.toml` / `uv.lock` | Declares `idna` — now a direct import in `src/jsonsrc.py`, not only a `requests` transitive. These are the authoritative production manifests; see §6. |
+| `AGENTS.md` | Invariants 15 (two-channel error contract) and 16 (host normalisation must agree with `requests`); "Dependency workflow — uv only". |
 | `gebco_app.py` | `_error_response()` gained `log_extra`; the `JsonSrcError` handler returns `exc.public_message` (not `str(exc)`) and logs `exc.log_fields()`. |
 | `tests/test_jsonsrc.py` | Loader tests now assert `reason` instead of message text; new endpoint-contract, normalisation, log-diagnostic and lon/lat regression tests. |
 
@@ -122,7 +122,24 @@ timeouts; `allow_redirects=False`; streamed size cap that ignores
 `Content-Length`. Legacy IPv4 spellings (`127.1`, `0x7f.0.0.1`,
 `2130706433`) still reach the guard through `getaddrinfo` as before.
 
-## 6. Residual risks
+## 6. Dependency handling
+
+`idna` is a direct import in `src/jsonsrc.py` (the SSRF guard must use
+the same IDNA implementation `requests`/`urllib3` use to build the
+hostname they dial), so it is declared in the **root `pyproject.toml` and
+resolved in the root `uv.lock`** — the authoritative production manifests
+since the v0.5.1 Pipenv-to-uv migration. `uv lock --check` verifies they
+agree. `pyproj`, a direct dependency since v0.5.4, is likewise declared
+in that root uv project.
+
+`Pipfile`, `Pipfile.lock` and `requirements.txt` are **intentionally not
+synchronized** with this change. They are archived pre-v0.5.1 artefacts,
+retained for historical reference only and neither maintained nor tested;
+an interim revision of this branch added `idna`/`pyproj` to them and that
+was reverted. They are not mirrors and should not be read as such.
+See `AGENTS.md` -> "Dependency workflow — uv only".
+
+## 7. Residual risks
 
 * **DNS rebinding is NOT fixed.** The address validated by
   `getaddrinfo()` is still not pinned to the socket `requests` opens, so

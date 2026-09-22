@@ -32,14 +32,13 @@ gebco/
 ├── conf/                 # gunicorn/pm2 config
 ├── scripts/              # deployment/runtime helper scripts
 ├── simu/                 # legacy experiment scripts (ignore unless asked)
-├── pyproject.toml / uv.lock  # AUTHORITATIVE dependency manifest. VM34 and
-│                             # VM37 both build their .venv with `uv sync`.
-├── Pipfile / Pipfile.lock  # Legacy Pipenv mirror, kept for non-uv hosts
-├── requirements.txt      # Legacy pip mirror (same caveat)
-│                         # Both mirrors are hand-maintained and have drifted
-│                         # before (pyproj was missing from v0.5.4 until
-│                         # v0.5.7 S1). Add every new DIRECT dependency to all
-│                         # three, or retire the two mirrors.
+├── pyproject.toml / uv.lock  # AUTHORITATIVE production dependency manifest.
+│                             # VM34 and VM37 both build their .venv with
+│                             # `uv sync`. New production deps go HERE only.
+├── Pipfile / Pipfile.lock  # ARCHIVED pre-v0.5.1 Pipenv runtime — historical
+├── requirements.txt        # ARCHIVED pre-v0.5.1 pip mirror — historical
+│                           # Neither is maintained, synchronized or tested.
+│                           # See "Dependency workflow — uv only".
 ├── change_log.md
 └── README.md             # End-user facing
 ```
@@ -84,6 +83,40 @@ OpenAPI/public-doc metadata is now environment-driven in production:
 `HOST` is still used elsewhere in the app, but **Swagger/OpenAPI servers no
 longer fall back to localhost**. If `API_SERVERS` is unset, the generated
 OpenAPI omits the `servers` section instead of advertising a local URL.
+
+## Dependency workflow — uv only
+
+v0.5.1 moved the production runtime from Pipenv to uv
+(`specs/v0.5.1_migration_plan.md`). There are exactly **two** supported
+dependency projects, each with its own lockfile:
+
+| Scope | Manifest | Lockfile | Used by |
+|-------|----------|----------|---------|
+| Production runtime | root `pyproject.toml` | root `uv.lock` | gunicorn/uvicorn on VM34 + VM37 (`./.venv/bin/gunicorn`), and `uv run --group dev pytest tests/` |
+| Conversion / verification tooling | `dev2026/pyproject.toml` | `dev2026/uv.lock` | offline GEBCO conversion + verification only |
+
+**Adding a dependency:** add it to the applicable uv project and refresh
+*that* project's lockfile (`uv lock`). Nothing else — there is no third
+manifest to keep in step. A module imported directly by `src/` or
+`gebco_app.py` must be declared in the root `pyproject.toml` even when it
+already arrives transitively. `idna` (v0.5.7 S1) is the worked example:
+`src/jsonsrc.py` imports it directly and must not depend on `requests`
+continuing to pull it in.
+
+**`Pipfile`, `Pipfile.lock` and `requirements.txt` are archived.** They
+describe the pre-v0.5.1 Pipenv/pip runtime and are retained for
+historical reference only. They are **not** maintained, synchronized or
+tested, and they are already stale — `pyproj` has been a direct
+dependency since v0.5.4 and was never added to them. Do not update
+them, do not regenerate `Pipfile.lock`, and do not treat a difference
+between them and `uv.lock` as a bug.
+
+Pipenv is no longer a supported GEBCO runtime. **`pyenv` is a different
+tool** — a Python *interpreter* manager, unrelated to package management,
+and it is not to be removed from any VM. A
+`/home/odbadmin/.pyenv/.../gunicorn` process is a **stale-runtime
+detection signal**, never a supported deployment; see "Current deploy
+reality".
 
 ## Data sources
 
@@ -133,7 +166,7 @@ production Zarr; the ice_surface variant is only useful for schema checks.
 
 4. **numcodecs 0.16+ broke Blosc Zarr reads under numcodecs 0.15.1.**
    The error is `cannot import name cbuffer_sizes from numcodecs.blosc`. The
-   production Pipfile pins 0.15.1. The dev2026 venv uses 0.16+ because cp313
+   root uv project (`pyproject.toml` / `uv.lock`) pins 0.15.1. The dev2026 venv uses 0.16+ because cp313
    has no 0.15.x aarch64 wheels — and that's fine: dev2026 is write-only,
    production reads with 0.15.1. Don't unify these without testing.
 
@@ -441,11 +474,15 @@ Expected signals for the current deployment:
   `curl -sk --get 'https://127.0.0.1:8013/gebco' --data-urlencode 'lon=-155,-143,-131,-118,-105,-92' --data-urlencode 'lat=-30,-18,-6,6,18,28' --data-urlencode 'mode=zonly'`
   returns `200`
 
-If you see `.stage_v051` or `.stage_v055` in `exec cwd`, you're looking at a
-historical staging checkout. If you still see `/home/odbadmin/.pyenv/.../gunicorn`,
-you're looking at a stale legacy runtime and **not** the intended deployment;
-this exact mismatch caused the first false-negative `Q4 lon360` diagnosis
-during the VM34 rollout.
+**Stale-runtime detection (not a supported deployment).** If you see
+`.stage_v051` or `.stage_v055` in `exec cwd`, you're looking at a historical
+staging checkout. If you still see `/home/odbadmin/.pyenv/.../gunicorn`,
+you're looking at a stale legacy process and **not** the intended
+deployment — the supported runtime is always `./.venv/bin/gunicorn` from the
+root `uv` env. This exact mismatch caused the first false-negative
+`Q4 lon360` diagnosis during the VM34 rollout. Use it to *identify* a stale
+process; do not remove `pyenv` itself from the VM, it is an unrelated
+interpreter manager.
 
 ## Where to ask "what did the last agent do?"
 
