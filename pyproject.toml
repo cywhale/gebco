@@ -9,6 +9,11 @@ dependencies = [
     "fastapi[standard]==0.115.12",
     "geopy==2.4.1",
     "gunicorn==23.0.0",
+    # Direct import in src/jsonsrc.py: the SSRF guard must use the SAME
+    # IDNA implementation `requests`/`urllib3` use to build the hostname
+    # they dial (v0.5.7 S1). It arrives transitively via requests, but an
+    # undeclared direct import is one `requests` refactor from breaking.
+    "idna>=3.7,<4",
     "numcodecs==0.15.1",
     "numpy==1.26.4",
     "orjson==3.10.16",

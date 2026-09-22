@@ -1,4 +1,14 @@
 #!/bin/bash
+# ARCHIVED HISTORICAL SCRATCHPAD: this file is not a supported launcher.
+# It intentionally contains no active commands. Do not use it for deployment.
+#
+# Current supported workflow:
+# - Dependency/runtime setup: root pyproject.toml and uv.lock.
+# - Staging, cutover, PM2, and rollback: dev2026/README.md and specs/.
+# - Production process definition: conf/ecosystem.config.js.
+#
+# The commands below are retained as development history only. Keep them
+# commented out; update the supported documents and PM2 configuration instead.
 #### most-performant, add worker, --threads, --worker-connections seems no extra benefits
 # gunicorn gebco_app:app -w 2 -k uvicorn.workers.UvicornWorker --reload
 #### maximum no-error limit (if -p 3, always throw error)
@@ -16,32 +26,31 @@
 # pipreqs --force ./
 
 # https
-source "$HOME/python/py38/bin/activate"
-cd "$HOME/python/gebco"
-gunicorn gebco_app:app -w 2 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload
+# source "$HOME/python/py38/bin/activate"
+# cd "$HOME/python/gebco"
+# gunicorn gebco_app:app -w 2 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload
 
 # debug
 ## localhost: gunicorn gebco_app:app -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --timeout 120
-gunicorn gebco_app:app -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload --capture-output --log-level debug --access-logfile - --error-logfile -
+# gunicorn gebco_app:app -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8013 --keyfile conf/privkey.pem --certfile conf/fullchain.pem --reload --capture-output --log-level debug --access-logfile - --error-logfile -
 
 # pm2 start
-pm2 start ./conf/ecosystem.config.js
+# pm2 start ./conf/ecosystem.config.js
 
 
 #### pyenv to upgrade python version (if needed)
-deactivate
-cd ~/python
-curl https://pyenv.run | bash
+# deactivate
+# cd ~/python
+# curl https://pyenv.run | bash
 # ./bashrc
 # echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc
 ##### should append, not directly echo 'export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc
 # echo -e 'if command -v pyenv 1>/dev/null 2>&1; then\n eval "$(pyenv init -)"\nfi' >> ~/.bashrc
-exec $SHELL #souce ~/.bashrc
-pyenv update
-pyenv versions
-pyenv install 3.10:latest
-pyenv local 3.10.10
-python3.10 -m venv py310
-
+# exec $SHELL #souce ~/.bashrc
+# pyenv update
+# pyenv versions
+# pyenv install 3.10:latest
+# pyenv local 3.10.10
+# python3.10 -m venv py310
 
 

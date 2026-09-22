@@ -358,3 +358,66 @@
          `GEBCO_MAX_POLYGON_CELLS=2000000000` in `.env` so the ODB map
          frontend receives data instead of an unhandled `413` on very
          large polygons. VM37 keeps the stricter branch default `5e7`.
+
+#### ver 0.5.7 (UNRELEASED) S1 security: `jsonsrc` SSRF error-message oracle 20260922
+
+    -- Incident: `/gebco?jsonsrc=<url>` distinguished DNS failure,
+       SSRF block and non-JSON upstream by error text, making it an
+       internal hostname-existence oracle
+       (`specs/security/2026-09-22_jsonsrc_ssrf_error_oracle_evidence.md`).
+    -- Every remote-path failure now returns one fixed response:
+       `HTTP 400 {"Error":"jsonsrc could not be retrieved"}` (42 bytes).
+    -- `src/jsonsrc.py`:
+       * `JsonSrcError` split into `public_message` (client-facing) and
+         `reason` / `host` / `detail` (server-side only)
+       * new `RemoteJsonSrcError` for every remote failure class
+       * new `_normalize_host()` — trailing-dot strip, casefold, IDN →
+         punycode, canonical IP literals, checked before the SSRF guard
+       * IP literals no longer round-trip through DNS
+       * `requests` timeouts / connection errors / non-2xx statuses are
+         mapped to the fixed 400 instead of escaping as a 500
+    -- `gebco_app.py`: `_error_response(..., log_extra=)`; the
+       `JsonSrcError` handler returns `exc.public_message`, never
+       `str(exc)`.
+    -- Inline JSON errors, `jsonsrc is empty` and the
+       `GEBCO_JSONSRC_ALLOW_REMOTE=false` message are unchanged — none
+       of them is a remote-host oracle.
+    -- Unchanged: lon/lat, mode, line, polygon, Zarr and GEBCO data
+       behaviour; all seven H1 SSRF layers.
+    -- Residual risk: DNS rebinding is still NOT mitigated (the
+       validated address is not pinned to the connection). See
+       `specs/security/2026-09-22_jsonsrc_error_oracle_remediation.md`.
+    -- Review round 1 fixes:
+       * host normalisation now uses the `idna` package with
+         `uts46=True`, exactly as `requests`/`urllib3` do. The stdlib
+         `"idna"` codec (IDNA 2003) and `str.casefold()` both fold
+         `straße` to `strasse` while `requests` dials
+         `xn--strae-oqa` — the guard was validating a different host
+         from the one connected to.
+       * `urlparse()` and `.hostname` are now inside the guarded
+         block: `http://[::1` and `http://[not-an-ip]/` raised bare
+         `ValueError`s that reached the generic handler and echoed
+         the parser message, breaking the fixed public contract.
+       * endpoint tests moved onto a real ASGI `TestClient`.
+    -- Review round 2 fixes:
+       * strip exactly ONE trailing root dot; reject `host..` as
+         `invalid_host`. `rstrip(".")` folded it to `host` while
+         `requests` dials `host..` verbatim.
+       * `_resolved_addresses` now catches `UnicodeError`:
+         `socket.getaddrinfo` IDNA-encodes the name itself and raises
+         that, not `gaierror`, for an empty/over-long label
+         (`http://a..b.example/` leaked an 85-byte codec message).
+       * `_fetch_url` ends with a catch-all (`unexpected_error`):
+         `urllib3.exceptions.LocationParseError` is a `ValueError` but
+         NOT a `requests.RequestException` and escaped the handler
+         (`http://example.com../` leaked a 69-byte parse error).
+    -- Dependencies (uv only): `idna` is now a direct dependency in the
+       root `pyproject.toml` / `uv.lock` because `src/jsonsrc.py` imports
+       it directly rather than relying on the `requests` transitive.
+       `pyproj` remains declared in that same root uv production
+       environment. The legacy `Pipfile` / `Pipfile.lock` /
+       `requirements.txt` are archived pre-v0.5.1 artefacts and are
+       intentionally NOT maintained or synchronized; see `AGENTS.md`
+       -> "Dependency workflow — uv only".
+    -- Verification: `uv run --group dev pytest tests/` → 161 passed
+       (was 105); `git diff --check` clean. Not deployed.

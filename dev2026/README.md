@@ -1,8 +1,10 @@
 # dev2026/ — GEBCO_2026 conversion + verification tooling
 
 Offline tooling used to upgrade the production API from `GEBCO_2023_sub_ice_topo.zarr`
-to `GEBCO_2026_sub_ice_topo.zarr`. Lives in its own `uv` venv so it doesn't
-touch the production Pipenv (`../Pipfile`).
+to `GEBCO_2026_sub_ice_topo.zarr`. Lives in its own `uv` project
+(`dev2026/pyproject.toml` + `dev2026/uv.lock`, Python 3.13) so it never
+touches the production runtime, which is the root `uv`-managed `.venv` on
+Python 3.11 (`../pyproject.toml` + `../uv.lock`).
 
 For the latest verification run with reproducible commands, see
 [`TESTING.md`](./TESTING.md). For project-wide handover info aimed at AI
@@ -262,10 +264,14 @@ sparse-read behaviour most directly.
 
 ## What stays out of scope (intentionally)
 
-* `../Pipfile` / `../requirements.txt` are kept for legacy reference, but the
-  current production runtime is the root `uv`-managed `.venv` on Python 3.11.
-  The dev2026 venv exists so we can use Python 3.13 + uv for writing without
-  touching the production runtime.
+* `../Pipfile`, `../Pipfile.lock` and `../requirements.txt` are **archived,
+  unsupported historical files** from the pre-v0.5.1 Pipenv/pip era. They are
+  not maintained, synchronized or tested, and are already stale. The only
+  supported production runtime is the root `uv`-managed `.venv` on Python
+  3.11, built from `../pyproject.toml` + `../uv.lock`; never bootstrap a
+  production env from them. The dev2026 venv exists so we can use Python
+  3.13 + uv for writing without touching that runtime. See
+  `../AGENTS.md` -> "Dependency workflow — uv only".
 * The old `../dev/read_gebco_raw01.ipynb` is kept verbatim as the historical
   record of the 2022→2023 upgrade. New releases get a new directory (this
   one), not edits to the old one.
@@ -385,5 +391,8 @@ For the current production runtime, expect:
 
 If you instead see `.stage_v051`, you're looking at the temporary staging
 checkout used during the GEBCO_2026 cutover. In either case, seeing
-`./.venv/bin/gunicorn` means `pm2` is serving the new root-`uv` runtime, not
-the legacy pyenv-based gunicorn.
+`./.venv/bin/gunicorn` means `pm2` is serving the supported root-`uv`
+runtime. A `/home/odbadmin/.pyenv/.../gunicorn` path is the opposite
+signal — a stale legacy process left over from before v0.5.1, useful only
+for *detecting* a bad deploy. It is not a supported runtime (and `pyenv`
+itself, an unrelated Python interpreter manager, should be left installed).

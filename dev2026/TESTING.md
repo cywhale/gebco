@@ -10,7 +10,7 @@ synced (`cd dev2026 && uv sync --extra dev`).
 | Branch                  | `gebco_2026_api`                                            |
 | Runner                  | cowork desktop sandbox (Linux aarch64, 4 vCPU, 3.8 GB RAM)  |
 | Python (verification)   | 3.13.12 via `dev2026/.venv`                                 |
-| Canonical pkg versions  | `zarr==2.18.7`, `numcodecs==0.15.1`, `xarray==2026.4.0`, `netCDF4==1.7.4`, `h5netcdf==1.8.1`, `dask==2026.3.0` — what `uv sync --extra dev` resolves from `pyproject.toml` (see `dev2026/uv.lock`). Production runtime reads with `zarr==2.18.6` / `numcodecs==0.15.1` (`../Pipfile.lock`), which is on-disk compatible. |
+| Canonical pkg versions  | `zarr==2.18.7`, `numcodecs==0.15.1`, `xarray==2026.4.0`, `netCDF4==1.7.4`, `h5netcdf==1.8.1`, `dask==2026.3.0` — what `uv sync --extra dev` resolves from `pyproject.toml` (see `dev2026/uv.lock`). Production runtime reads with `zarr==2.18.6` / `numcodecs==0.15.1` (`../pyproject.toml` + `../uv.lock`), which is on-disk compatible. |
 | Sandbox deviation       | The actual conversion run in this report was executed with `zarr==3.2.1` / `numcodecs==0.16.5` installed via `uv pip install --no-deps`, because Python 3.13 on this aarch64 sandbox can't build the `asciitree==0.3.3` sdist (uv's build isolation hits `RecursionError` inside `shutil.rmtree`). The script forces `zarr_format=2` regardless, so the produced store is bit-compatible with the canonical 2.18.x runtime — but if you reproduce on a clean Mac with `uv sync --extra dev`, expect the canonical versions and identical results. |
 | Source NetCDF           | `data_src/GEBCO_2026/GEBCO_2026_sub_ice.nc` (7.5 GB, DOI 10.5285/4f68d5c7-…) |
 | Produced Zarr           | `data/GEBCO_2026_sub_ice_topo.zarr` (Blosc/lz4 clevel=5 shuffle=1, 3.5 GB, 2048 chunks 675×2700) |
@@ -618,8 +618,8 @@ re-run the same way; see Phase A above.
       macOS / Linux; the wrapper/binary mismatch reported in an earlier
       Linux sandbox session was sandbox-specific, not a project constraint.
     - As a final belt-and-suspenders, running a `curl` against a known
-      polygon on the production Pipenv env remains good practice before
-      cutting the release.
+      polygon on the production runtime (the root `uv`-managed `.venv`)
+      remains good practice before cutting the release.
 * The reported sandbox versions (`zarr==3.2.1`, `numcodecs==0.16.5`) deviate
   from the canonical `uv sync` resolution (`zarr==2.18.7`, `numcodecs==0.15.1`).
   See the environment table above for the reason. Re-running the suite on a

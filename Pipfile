@@ -1,3 +1,16 @@
+# ARCHIVED — NOT a supported deployment manifest.
+#
+# GEBCO production moved from Pipenv to uv in v0.5.1
+# (specs/v0.5.1_migration_plan.md). The authoritative production
+# dependency manifest is the root pyproject.toml + uv.lock; VM34 and
+# VM37 both build their .venv with `uv sync`.
+#
+# This file is kept for historical reference only. It is NOT
+# maintained, synchronized or tested, and it is already stale (for
+# example pyproj, a direct dependency since v0.5.4, was never added).
+# Do not update it; add new dependencies to the uv project instead.
+# See AGENTS.md -> "Dependency workflow — uv only".
+
 [[source]]
 url = "https://pypi.org/simple"
 verify_ssl = true

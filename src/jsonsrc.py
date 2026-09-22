@@ -1,4 +1,4 @@
-"""Hardened loader for the `jsonsrc` query parameter (v0.5.3 H1).
+"""Hardened loader for the `jsonsrc` query parameter (v0.5.3 H1, v0.5.7 S1).
 
 Pre-v0.5.3 the API did `requests.get(jsonsrc)` with no timeout, no scheme
 restriction, no host restriction, and no response-size cap. For a public
@@ -17,29 +17,126 @@ This module implements the seven-layer defence described in
   6. Streamed size cap         (config.JSONSRC_MAX_BYTES, header ignored)
   7. Content-type hint + JSON parse
 
-Public surface: `load_jsonsrc(jsonsrc: str) -> object` — returns the
-parsed JSON object, or raises `JsonSrcError` (a subclass of `ValueError`)
-on any failure. The exception message is safe to include in a 400
-response body.
+v0.5.7 S1 — error-message oracle fix
+------------------------------------
+The layers above blocked the fetch but the *messages* still leaked which
+layer fired: "could not resolve host X", "blocked host: X resolves to
+private/loopback 10.1.2.3", "invalid JSON (content-type='text/html')".
+That turns /gebco into an internal hostname-existence and reachability
+oracle even though no upstream body is ever returned (see
+`specs/security/2026-09-22_jsonsrc_ssrf_error_oracle_evidence.md`).
+
+Every failure on the *remote* path now raises `RemoteJsonSrcError`, whose
+public message is the fixed constant `PUBLIC_REMOTE_ERROR`. The failure
+class lives in `.reason` / `.host` / `.detail`, which the caller emits to
+the structured log and never to the client.
+
+Inline-JSON failures keep their descriptive messages: they are computed
+purely from the caller's own request body and create no remote oracle.
+"remote disabled" likewise keeps its message — it is a constant of the
+deployment, identical for every URL, so it tells an attacker nothing
+about any host.
+
+Public surface:
+  * `load_jsonsrc(jsonsrc: str) -> object` — parsed JSON, or raises
+    `JsonSrcError` (a subclass of `ValueError`).
+  * `JsonSrcError.public_message` — the ONLY string that may reach a
+    client. Use it instead of `str(exc)` at the response boundary.
+  * `JsonSrcError.log_fields()` — bounded, non-secret diagnostics for
+    the server-side structured log.
 
 Residual risk — DNS rebinding (host resolves "safely" during the
 allowlist check but to a private address at connect time) is NOT
-mitigated; see spec §6.5.
+mitigated: the validated address is not pinned to the socket that
+`requests` subsequently opens. See spec §6.5 and
+`specs/security/2026-09-22_jsonsrc_ssrf_error_oracle_evidence.md` §3.2.
 """
 from __future__ import annotations
 
 import ipaddress
 import json
 import socket
-from typing import Iterable
+from typing import Iterable, Optional
+from urllib.parse import urlparse
 
+# The SAME IDNA implementation `requests`/`urllib3` use to build the
+# hostname they actually dial. The stdlib `"idna"` codec is IDNA 2003 and
+# disagrees with it (e.g. `straße` -> `strasse` vs `xn--strae-oqa`), which
+# would let the guard inspect a different host than the one connected to.
+import idna
 import requests
 
 import src.config as config
 
+# The single public string returned for EVERY remote-path failure.
+PUBLIC_REMOTE_ERROR = "jsonsrc could not be retrieved"
+
+# Bounds for values that end up in a log line. Hostnames and upstream
+# content types are attacker-controlled; they are truncated here and
+# JSON-encoded by the caller, so they cannot forge a log record.
+_MAX_HOST_CHARS = 253    # RFC 1035 maximum name length
+_MAX_DETAIL_CHARS = 120
+
+
+def _bounded(value: object, limit: int) -> Optional[str]:
+    """Truncate `value` to `limit` chars and drop non-printable bytes.
+
+    Control characters are what a log-injection attempt needs; the
+    caller additionally `json.dumps()`es the record, so this is
+    defence in depth rather than the only guard.
+    """
+    if value is None:
+        return None
+    text = str(value)[:limit]
+    if not text.isprintable():
+        text = "".join(ch if ch.isprintable() else " " for ch in text)
+    return text
+
 
 class JsonSrcError(ValueError):
-    """Raised by `load_jsonsrc()` on any rejected input."""
+    """Raised by `load_jsonsrc()` on any rejected input.
+
+    `public_message` is the only attribute safe to return to a client.
+    `reason` / `host` / `detail` are internal diagnostics.
+    """
+
+    def __init__(
+        self,
+        public_message: str,
+        *,
+        reason: Optional[str] = None,
+        host: Optional[str] = None,
+        detail: object = None,
+    ) -> None:
+        super().__init__(public_message)
+        self.public_message = public_message
+        self.reason = reason
+        self.host = _bounded(host, _MAX_HOST_CHARS)
+        self.detail = _bounded(detail, _MAX_DETAIL_CHARS)
+
+    def log_fields(self) -> dict:
+        """Bounded diagnostics for the structured server-side log."""
+        fields: dict = {"jsonsrc_reason": self.reason}
+        if self.host is not None:
+            fields["jsonsrc_host"] = self.host
+        if self.detail is not None:
+            fields["jsonsrc_detail"] = self.detail
+        return fields
+
+
+class RemoteJsonSrcError(JsonSrcError):
+    """A failure on the remote-URL path — always the same public message."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        host: Optional[str] = None,
+        detail: object = None,
+    ) -> None:
+        super().__init__(
+            PUBLIC_REMOTE_ERROR, reason=reason, host=host, detail=detail
+        )
 
 
 _PRIVATE_NETS_V4: tuple[ipaddress.IPv4Network, ...] = (
@@ -78,6 +175,63 @@ def _is_private(addr: str) -> bool:
     return any(ip in net for net in _PRIVATE_NETS_V4)
 
 
+def _normalize_host(raw: Optional[str]) -> tuple[str, bool]:
+    """Canonicalise a URL hostname *before* any SSRF decision.
+
+    Returns `(host, is_ip_literal)`.
+
+    v0.5.7 S1: `host.` and `host` are the same DNS name, and DNS labels
+    are case-insensitive, so both must reach the same guard branch — a
+    string-compare guard that misses `EXSE-001.NTU.INTERNAL.` would be a
+    bypass.
+
+    The ASCII / IDN split mirrors `requests.PreparedRequest.prepare_url`
+    exactly: ASCII hosts are lowercased and passed through, non-ASCII
+    hosts go through `idna.encode(..., uts46=True)`. Anything else lets
+    the guard validate one name while `requests` dials another — the
+    stdlib `"idna"` codec (IDNA 2003 + nameprep) does exactly that, and
+    `str.casefold()` is worse still: it turns `straße` into `strasse`
+    while `requests` connects to `xn--strae-oqa`.
+    `test_guard_host_matches_requests_prepared_host` pins the agreement.
+
+    IP literals are returned in canonical form and flagged, so the caller
+    can check them directly instead of round-tripping through DNS.
+    """
+    host = (raw or "").strip()
+    # Exactly ONE trailing dot is the DNS root label, and `host.` is the
+    # same name as `host`. More than one is an empty label: not a valid
+    # name, and `requests` would dial `host..` verbatim, so stripping
+    # them would leave the guard validating a name that is never used.
+    if host.endswith("."):
+        host = host[:-1]
+    if not host:
+        raise RemoteJsonSrcError("missing_host")
+    if host.endswith("."):
+        raise RemoteJsonSrcError(
+            "invalid_host", host=host, detail="empty_dns_label"
+        )
+
+    # IPv4 / IPv6 literal (urlparse already stripped the [] from v6).
+    try:
+        return str(ipaddress.ip_address(host)), True
+    except ValueError:
+        pass
+
+    if host.isascii():
+        # What `requests` does: no IDNA pass, ASCII host used as-is.
+        # `urlsplit().hostname` has already lowercased it; be explicit.
+        return host.lower(), False
+
+    try:
+        host = idna.encode(host, uts46=True).decode("ascii")
+    except (idna.IDNAError, UnicodeError) as exc:
+        # `requests` raises InvalidURL here, so it would never connect.
+        raise RemoteJsonSrcError(
+            "invalid_host", detail=type(exc).__name__
+        ) from exc
+    return host.lower(), False
+
+
 def _resolved_addresses(host: str) -> Iterable[str]:
     """Yield every IP address `getaddrinfo` returns for `host`.
 
@@ -88,7 +242,17 @@ def _resolved_addresses(host: str) -> Iterable[str]:
     try:
         records = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
-        raise JsonSrcError(f"could not resolve host {host!r}: {exc}") from exc
+        raise RemoteJsonSrcError(
+            "dns_failure", host=host, detail=f"gaierror errno={exc.errno}"
+        ) from exc
+    except UnicodeError as exc:
+        # CPython's getaddrinfo IDNA-encodes the name itself and raises
+        # UnicodeError ("label empty or too long") — a ValueError, NOT a
+        # gaierror. Uncaught it reached gebco_app's generic ValueError
+        # handler and echoed the codec message.
+        raise RemoteJsonSrcError(
+            "invalid_host", host=host, detail=type(exc).__name__
+        ) from exc
     seen: set[str] = set()
     for record in records:
         family, _socktype, _proto, _canon, sockaddr = record
@@ -103,78 +267,139 @@ def _resolved_addresses(host: str) -> Iterable[str]:
             yield addr
 
 
-def _check_host(host: str) -> None:
-    if not host:
-        raise JsonSrcError("URL has no host")
-    if host.lower() == "localhost":
-        raise JsonSrcError("blocked host: localhost")
-    addrs = list(_resolved_addresses(host))
-    if not addrs:
-        raise JsonSrcError(f"could not resolve host {host!r}")
+def _check_host(host: str, is_ip_literal: bool) -> None:
+    """SSRF guard. `host` must already be normalised."""
+    if host == "localhost":
+        raise RemoteJsonSrcError("blocked_localhost", host=host)
+
+    if is_ip_literal:
+        # The literal IS the destination; no DNS round-trip needed, and
+        # the address checked is exactly the address dialled.
+        addrs = [host]
+    else:
+        addrs = list(_resolved_addresses(host))
+        if not addrs:
+            raise RemoteJsonSrcError("dns_no_records", host=host)
+
     for addr in addrs:
         if _is_private(addr):
-            raise JsonSrcError(
-                f"blocked host: {host!r} resolves to private/loopback {addr}"
+            raise RemoteJsonSrcError(
+                "blocked_private_address", host=host, detail=f"addr={addr}"
             )
 
 
 def _fetch_url(url: str) -> object:
-    from urllib.parse import urlparse
+    # v0.5.7 S1: `urlparse()` AND the `.hostname` property both raise a
+    # bare ValueError on a malformed URL (`http://[::1` -> "Invalid IPv6
+    # URL", `http://[not-an-ip]/` -> "... does not appear to be an IPv4
+    # or IPv6 address"). Outside this try they reached the generic
+    # ValueError handler in gebco_app and echoed the parser message,
+    # breaking the fixed public contract.
+    try:
+        parsed = urlparse(url)
+        scheme = parsed.scheme
+        hostname = parsed.hostname
+    except ValueError as exc:
+        raise RemoteJsonSrcError(
+            "malformed_url", detail=type(exc).__name__
+        ) from exc
 
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise JsonSrcError(f"unsupported scheme: {parsed.scheme!r}")
-    if not parsed.hostname:
-        raise JsonSrcError("URL has no hostname")
-    _check_host(parsed.hostname)
+    if scheme not in ("http", "https"):
+        raise RemoteJsonSrcError(
+            "unsupported_scheme", detail=f"scheme={scheme[:32]!r}"
+        )
+    if not hostname:
+        raise RemoteJsonSrcError("missing_host")
+
+    # v0.5.7 S1 — normalise BEFORE the guard, not after.
+    host, is_ip_literal = _normalize_host(hostname)
+    _check_host(host, is_ip_literal)
 
     timeout = (config.JSONSRC_CONNECT_TIMEOUT_S, config.JSONSRC_READ_TIMEOUT_S)
     max_bytes = config.JSONSRC_MAX_BYTES
 
-    with requests.get(
-        url,
-        stream=True,
-        timeout=timeout,
-        allow_redirects=False,  # H1 layer 5
-    ) as resp:
-        if 300 <= resp.status_code < 400:
-            raise JsonSrcError(
-                f"redirect not allowed (got {resp.status_code} from upstream)"
-            )
-        resp.raise_for_status()
-
-        ctype = resp.headers.get("content-type", "")
-        # Content-type is a hint, not a gate (server-controlled). Logged
-        # via the structured logger by the caller if the response parses.
-
-        # Streamed size cap (H1 layer 6) — never trust Content-Length.
-        buf = bytearray()
-        for chunk in resp.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                continue
-            buf.extend(chunk)
-            if len(buf) > max_bytes:
-                raise JsonSrcError(
-                    f"jsonsrc response too large: > {max_bytes} bytes"
+    try:
+        with requests.get(
+            url,
+            stream=True,
+            timeout=timeout,
+            allow_redirects=False,  # H1 layer 5
+        ) as resp:
+            if 300 <= resp.status_code < 400:
+                raise RemoteJsonSrcError(
+                    "redirect_blocked", host=host,
+                    detail=f"status={resp.status_code}",
                 )
-        try:
-            return json.loads(buf.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise JsonSrcError(
-                f"jsonsrc URL returned invalid JSON "
-                f"(content-type={ctype!r}): {exc}"
-            ) from exc
+            if resp.status_code >= 400:
+                # Replaces resp.raise_for_status(): same rejection, but
+                # the status stays internal instead of reaching the client.
+                raise RemoteJsonSrcError(
+                    "http_error", host=host, detail=f"status={resp.status_code}"
+                )
+
+            ctype = resp.headers.get("content-type", "")
+            # Content-type is a hint, not a gate (server-controlled).
+
+            # Streamed size cap (H1 layer 6) — never trust Content-Length.
+            buf = bytearray()
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                buf.extend(chunk)
+                if len(buf) > max_bytes:
+                    raise RemoteJsonSrcError(
+                        "oversized_response", host=host,
+                        detail=f"limit={max_bytes}",
+                    )
+            try:
+                text = bytes(buf).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise RemoteJsonSrcError(
+                    "invalid_encoding", host=host, detail=type(exc).__name__
+                ) from exc
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as exc:
+                # The upstream body NEVER appears in a message; the
+                # content-type hint is kept for operators only.
+                raise RemoteJsonSrcError(
+                    "invalid_json", host=host, detail=f"content_type={ctype[:64]!r}"
+                ) from exc
+    except JsonSrcError:
+        raise  # already classified above; do not re-wrap
+    except requests.exceptions.Timeout as exc:
+        raise RemoteJsonSrcError(
+            "timeout", host=host, detail=type(exc).__name__
+        ) from exc
+    except requests.exceptions.RequestException as exc:
+        # Connection refused / reset / TLS failure / chunked-encoding
+        # error. Pre-v0.5.7 these escaped as IOError and surfaced as a
+        # 500, which was itself an oracle.
+        raise RemoteJsonSrcError(
+            "connection_error", host=host, detail=type(exc).__name__
+        ) from exc
+    except Exception as exc:
+        # The fixed public response is only fixed if NOTHING escapes this
+        # boundary. `urllib3.exceptions.LocationParseError` is the known
+        # case: a ValueError that is NOT a requests.RequestException, so
+        # it slipped past the clause above and gebco_app's generic
+        # ValueError handler echoed "Failed to parse: 'example.com..'".
+        # A distinct reason keeps it greppable instead of silent.
+        raise RemoteJsonSrcError(
+            "unexpected_error", host=host, detail=type(exc).__name__
+        ) from exc
 
 
 def load_jsonsrc(jsonsrc: str) -> object:
     """Parse `jsonsrc` — either an inline JSON string or a URL.
 
     Returns the parsed JSON object on success. Raises `JsonSrcError`
-    (subclass of `ValueError`) on any failure; the message is safe to
-    include in a 400 response body.
+    (subclass of `ValueError`) on any failure. Callers must return
+    `exc.public_message` to the client, never `str(exc)` of a wrapped
+    upstream exception.
     """
     if jsonsrc is None or jsonsrc == "":
-        raise JsonSrcError("jsonsrc is empty")
+        raise JsonSrcError("jsonsrc is empty", reason="empty_input")
 
     # H1 layer 1: inline-first dispatch. JSON objects/arrays start with
     # { or [ after whitespace; anything else is treated as a URL.
@@ -183,11 +408,18 @@ def load_jsonsrc(jsonsrc: str) -> object:
         try:
             return json.loads(jsonsrc)
         except json.JSONDecodeError as exc:
-            raise JsonSrcError(f"inline jsonsrc is not valid JSON: {exc}") from exc
+            # Inline input is the caller's own payload: echoing the parse
+            # position leaks nothing about our network.
+            raise JsonSrcError(
+                f"inline jsonsrc is not valid JSON: {exc}",
+                reason="inline_invalid_json",
+            ) from exc
 
     if not config.JSONSRC_ALLOW_REMOTE:
+        # Deployment constant, identical for every URL -> not an oracle.
         raise JsonSrcError(
-            "remote jsonsrc is disabled (GEBCO_JSONSRC_ALLOW_REMOTE=false)"
+            "remote jsonsrc is disabled (GEBCO_JSONSRC_ALLOW_REMOTE=false)",
+            reason="remote_disabled",
         )
 
     return _fetch_url(jsonsrc)

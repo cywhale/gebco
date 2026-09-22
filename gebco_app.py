@@ -19,6 +19,12 @@ The application contract is unchanged from v0.5.2; this version adds:
         requests return 413 instead of OOMing.
   * H10 dask pool size made env-controlled (`GEBCO_DASK_POOL_SIZE`).
   * H13 structured logging via QueueHandler; one log line per request.
+
+v0.5.7 S1 (security) — every remote `jsonsrc` failure now returns one
+fixed 400 body, `{"Error": "jsonsrc could not be retrieved"}`. The
+failure class (DNS, SSRF block, redirect, size cap, bad JSON, ...) moves
+to the structured log so the endpoint stops working as an internal
+hostname oracle. See specs/security/2026-09-22_jsonsrc_ssrf_error_oracle_evidence.md.
 """
 import json
 import os
@@ -159,10 +165,18 @@ def geojson_validator(json_obj):
 
 def _error_response(status_code: int, message: str, *, request: Request,
                     t0: float, modes: frozenset, polyMode: bool,
-                    npoints: Optional[int], error_kind: Optional[str] = None) -> JSONResponse:
-    """Build a 4xx/5xx JSONResponse and emit a single WARNING log line."""
+                    npoints: Optional[int], error_kind: Optional[str] = None,
+                    log_extra: Optional[dict] = None) -> JSONResponse:
+    """Build a 4xx/5xx JSONResponse and emit a single WARNING log line.
+
+    `message` is the PUBLIC text and is the only thing echoed to the
+    client. `log_extra` carries internal diagnostics (v0.5.7 S1: the
+    jsonsrc failure reason and normalised host) that must stay
+    server-side. Everything is serialised through `json.dumps`, so
+    attacker-controlled values are escaped and cannot forge a log line.
+    """
     elapsed_ms = round((time.monotonic() - t0) * 1000, 2)
-    gebco_logger.logger.warning(json.dumps({
+    payload = {
         "event": "gebco_request_error",
         "status": status_code,
         "error": message,
@@ -173,7 +187,10 @@ def _error_response(status_code: int, message: str, *, request: Request,
         "npoints": npoints,
         "elapsed_ms": elapsed_ms,
         "error_kind": error_kind,
-    }))
+    }
+    if log_extra:
+        payload.update(log_extra)
+    gebco_logger.logger.warning(json.dumps(payload))
     content = {"Error": message}
     if error_kind is not None:
         content["kind"] = error_kind
@@ -295,9 +312,14 @@ def gebco(
                     out = {col: df[col].to_list() for col in df.columns}
                 response = ORJSONResponse(content=out)
     except JsonSrcError as exc:
+        # v0.5.7 S1: return the loader's fixed public message, never
+        # `str(exc)` of a wrapped DNS / socket / parser exception. The
+        # failure class stays in the structured log only, so remote
+        # failures are indistinguishable from outside.
         return _error_response(
-            status.HTTP_400_BAD_REQUEST, str(exc),
+            status.HTTP_400_BAD_REQUEST, exc.public_message,
             request=request, t0=t0, modes=modes, polyMode=polyMode, npoints=None,
+            log_extra=exc.log_fields(),
         )
     except BboxTooLarge as exc:
         return _error_response(

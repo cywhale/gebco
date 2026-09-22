@@ -32,8 +32,13 @@ gebco/
 ├── conf/                 # gunicorn/pm2 config
 ├── scripts/              # deployment/runtime helper scripts
 ├── simu/                 # legacy experiment scripts (ignore unless asked)
-├── Pipfile / Pipfile.lock  # Production runtime (Python 3.11, Pipenv)
-├── requirements.txt      # Mirror of Pipfile (for non-Pipenv deployments)
+├── pyproject.toml / uv.lock  # AUTHORITATIVE production dependency manifest.
+│                             # VM34 and VM37 both build their .venv with
+│                             # `uv sync`. New production deps go HERE only.
+├── Pipfile / Pipfile.lock  # ARCHIVED pre-v0.5.1 Pipenv runtime — historical
+├── requirements.txt        # ARCHIVED pre-v0.5.1 pip mirror — historical
+│                           # Neither is maintained, synchronized or tested.
+│                           # See "Dependency workflow — uv only".
 ├── change_log.md
 └── README.md             # End-user facing
 ```
@@ -78,6 +83,40 @@ OpenAPI/public-doc metadata is now environment-driven in production:
 `HOST` is still used elsewhere in the app, but **Swagger/OpenAPI servers no
 longer fall back to localhost**. If `API_SERVERS` is unset, the generated
 OpenAPI omits the `servers` section instead of advertising a local URL.
+
+## Dependency workflow — uv only
+
+v0.5.1 moved the production runtime from Pipenv to uv
+(`specs/v0.5.1_migration_plan.md`). There are exactly **two** supported
+dependency projects, each with its own lockfile:
+
+| Scope | Manifest | Lockfile | Used by |
+|-------|----------|----------|---------|
+| Production runtime | root `pyproject.toml` | root `uv.lock` | gunicorn/uvicorn on VM34 + VM37 (`./.venv/bin/gunicorn`), and `uv run --group dev pytest tests/` |
+| Conversion / verification tooling | `dev2026/pyproject.toml` | `dev2026/uv.lock` | offline GEBCO conversion + verification only |
+
+**Adding a dependency:** add it to the applicable uv project and refresh
+*that* project's lockfile (`uv lock`). Nothing else — there is no third
+manifest to keep in step. A module imported directly by `src/` or
+`gebco_app.py` must be declared in the root `pyproject.toml` even when it
+already arrives transitively. `idna` (v0.5.7 S1) is the worked example:
+`src/jsonsrc.py` imports it directly and must not depend on `requests`
+continuing to pull it in.
+
+**`Pipfile`, `Pipfile.lock` and `requirements.txt` are archived.** They
+describe the pre-v0.5.1 Pipenv/pip runtime and are retained for
+historical reference only. They are **not** maintained, synchronized or
+tested, and they are already stale — `pyproj` has been a direct
+dependency since v0.5.4 and was never added to them. Do not update
+them, do not regenerate `Pipfile.lock`, and do not treat a difference
+between them and `uv.lock` as a bug.
+
+Pipenv is no longer a supported GEBCO runtime. **`pyenv` is a different
+tool** — a Python *interpreter* manager, unrelated to package management,
+and it is not to be removed from any VM. A
+`/home/odbadmin/.pyenv/.../gunicorn` process is a **stale-runtime
+detection signal**, never a supported deployment; see "Current deploy
+reality".
 
 ## Data sources
 
@@ -127,7 +166,7 @@ production Zarr; the ice_surface variant is only useful for schema checks.
 
 4. **numcodecs 0.16+ broke Blosc Zarr reads under numcodecs 0.15.1.**
    The error is `cannot import name cbuffer_sizes from numcodecs.blosc`. The
-   production Pipfile pins 0.15.1. The dev2026 venv uses 0.16+ because cp313
+   root uv project (`pyproject.toml` / `uv.lock`) pins 0.15.1. The dev2026 venv uses 0.16+ because cp313
    has no 0.15.x aarch64 wheels — and that's fine: dev2026 is write-only,
    production reads with 0.15.1. Don't unify these without testing.
 
@@ -292,13 +331,38 @@ production Zarr; the ice_surface variant is only useful for schema checks.
 14. **jsonsrc 7-layer defence lives in `src/jsonsrc.py`** (v0.5.3 H1).
     Inline JSON dispatch is decided by the FIRST non-whitespace char
     (`{` or `[`); anything else is treated as a URL. URLs go through
-    scheme allowlist → host resolve → private-IP block (incl. IPv4-mapped
-    IPv6) → no-redirect → streamed size cap → JSON parse. **Residual
-    risk:** DNS rebinding is NOT mitigated (host resolves "safely" during
-    allowlist check but to a private address at connect time); spec §6.5
-    documents this acceptance.
+    scheme allowlist → host normalise → host resolve → private-IP block
+    (incl. IPv4-mapped IPv6) → no-redirect → streamed size cap → JSON
+    parse. **Residual risk:** DNS rebinding is NOT mitigated (host
+    resolves "safely" during allowlist check but to a private address at
+    connect time); spec §6.5 documents this acceptance.
 
-15. **Cell-index buffers MUST be a 64-bit dtype — never `int16`.** Grid
+15. **`jsonsrc` errors have a two-channel contract** (v0.5.7 S1, see
+    `specs/security/2026-09-22_jsonsrc_error_oracle_remediation.md`).
+    `JsonSrcError` carries a client-facing `public_message` and internal
+    `reason` / `host` / `detail`. Response handlers MUST use
+    `exc.public_message` — never `str(exc)`, and never a wrapped socket /
+    parser / `requests` exception — and pass `exc.log_fields()` to
+    `_error_response(..., log_extra=)`. Every failure on the remote path
+    raises `RemoteJsonSrcError`, so the public body is always the fixed
+    42-byte `{"Error":"jsonsrc could not be retrieved"}`; only the log
+    distinguishes DNS failure from an SSRF block. Inline-JSON errors keep
+    their descriptive text (no remote-host oracle). When adding a new
+    remote failure path, add a `reason`, not a new public message.
+
+16. **Host normalisation must agree with `requests`** (v0.5.7 S1).
+    `_normalize_host()` mirrors
+    `requests.PreparedRequest.prepare_url`: ASCII hosts lowercased and
+    passed through, non-ASCII hosts via `idna.encode(host, uts46=True)`
+    — the `idna` package, NOT the stdlib `"idna"` codec, and never
+    `str.casefold()`. Both of those are IDNA 2003 and fold `straße` to
+    `strasse` while `requests` dials `xn--strae-oqa`, so the guard would
+    validate a different host from the one connected to.
+    `tests/test_jsonsrc.py::test_guard_host_matches_requests_prepared_host`
+    pins the agreement against a real prepared URL; keep it passing if
+    `requests` is upgraded.
+
+17. **Cell-index buffers MUST be a 64-bit dtype — never `int16`.** Grid
     columns reach 86399 and rows 43199. For a line crossing 180°,
     `xmeridian.crossBoundary` inserts break-points at both ±180, so the bbox
     spans the full grid width, `mlonbase`≈0, and bbox-relative column indices
@@ -369,7 +433,12 @@ Both public GEBCO API VMs are currently served from:
 
 * checkout: `/home/odbadmin/python/gebco`
 * branch: `gebco_2026_perf_v054`
-* revision: `ad4179c` (v0.5.5 line sparse reads + observability)
+* revision: `ad4179c` (v0.5.5 line sparse reads + observability) as
+  last *verified* on `2026-05-31`. `a5d2a97` (v0.5.6 cross-180 fix)
+  landed on the branch after that check and this file has not been
+  re-verified against the VMs since — confirm with the `pm2 describe`
+  command below before relying on it. The v0.5.7 S1 security branch
+  (`security/jsonsrc-error-oracle-20260922`) is NOT deployed.
 * runtime: root `.venv` built by `uv sync --python 3.11`
 * polygon dependency: installed post-sync via
   `./scripts/install_polars_variant.sh auto`
@@ -405,11 +474,15 @@ Expected signals for the current deployment:
   `curl -sk --get 'https://127.0.0.1:8013/gebco' --data-urlencode 'lon=-155,-143,-131,-118,-105,-92' --data-urlencode 'lat=-30,-18,-6,6,18,28' --data-urlencode 'mode=zonly'`
   returns `200`
 
-If you see `.stage_v051` or `.stage_v055` in `exec cwd`, you're looking at a
-historical staging checkout. If you still see `/home/odbadmin/.pyenv/.../gunicorn`,
-you're looking at a stale legacy runtime and **not** the intended deployment;
-this exact mismatch caused the first false-negative `Q4 lon360` diagnosis
-during the VM34 rollout.
+**Stale-runtime detection (not a supported deployment).** If you see
+`.stage_v051` or `.stage_v055` in `exec cwd`, you're looking at a historical
+staging checkout. If you still see `/home/odbadmin/.pyenv/.../gunicorn`,
+you're looking at a stale legacy process and **not** the intended
+deployment — the supported runtime is always `./.venv/bin/gunicorn` from the
+root `uv` env. This exact mismatch caused the first false-negative
+`Q4 lon360` diagnosis during the VM34 rollout. Use it to *identify* a stale
+process; do not remove `pyenv` itself from the VM, it is an unrelated
+interpreter manager.
 
 ## Where to ask "what did the last agent do?"
 
