@@ -358,3 +358,34 @@
          `GEBCO_MAX_POLYGON_CELLS=2000000000` in `.env` so the ODB map
          frontend receives data instead of an unhandled `413` on very
          large polygons. VM37 keeps the stricter branch default `5e7`.
+
+#### ver 0.5.6 S1 (security) `jsonsrc` SSRF error-message oracle 20260922
+
+    -- Incident: `/gebco?jsonsrc=<url>` distinguished DNS failure,
+       SSRF block and non-JSON upstream by error text, making it an
+       internal hostname-existence oracle
+       (`specs/security/2026-09-22_jsonsrc_ssrf_error_oracle_evidence.md`).
+    -- Every remote-path failure now returns one fixed response:
+       `HTTP 400 {"Error":"jsonsrc could not be retrieved"}` (42 bytes).
+    -- `src/jsonsrc.py`:
+       * `JsonSrcError` split into `public_message` (client-facing) and
+         `reason` / `host` / `detail` (server-side only)
+       * new `RemoteJsonSrcError` for every remote failure class
+       * new `_normalize_host()` — trailing-dot strip, casefold, IDN →
+         punycode, canonical IP literals, checked before the SSRF guard
+       * IP literals no longer round-trip through DNS
+       * `requests` timeouts / connection errors / non-2xx statuses are
+         mapped to the fixed 400 instead of escaping as a 500
+    -- `gebco_app.py`: `_error_response(..., log_extra=)`; the
+       `JsonSrcError` handler returns `exc.public_message`, never
+       `str(exc)`.
+    -- Inline JSON errors, `jsonsrc is empty` and the
+       `GEBCO_JSONSRC_ALLOW_REMOTE=false` message are unchanged — none
+       of them is a remote-host oracle.
+    -- Unchanged: lon/lat, mode, line, polygon, Zarr and GEBCO data
+       behaviour; all seven H1 SSRF layers.
+    -- Residual risk: DNS rebinding is still NOT mitigated (the
+       validated address is not pinned to the connection). See
+       `specs/security/2026-09-22_jsonsrc_error_oracle_remediation.md`.
+    -- Verification: `uv run --group dev pytest tests/` → 135 passed
+       (was 105); `git diff --check` clean. Not deployed.
